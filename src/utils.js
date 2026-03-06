@@ -1,5 +1,3 @@
-import { INFLATIE, AOW_MAAND, FIRE_PCT, JAARRUIMTE_PCT, FRANCHISE } from './tokens.js';
-
 // ─── FORMATERING ──────────────────────────────────────────────────────────────
 export const eur = (n) => "\u20AC" + Math.max(0, Math.round(n)).toLocaleString("nl-NL");
 
@@ -11,10 +9,9 @@ export function berekenOnderhoud(woz, bouwjaar) {
 }
 
 // ─── AOW ──────────────────────────────────────────────────────────────────────
-// Wet: AOW-leeftijd minimaal 5 jaar van tevoren bekend
-// Officieel vastgesteld t/m 2032 (aow-jaar): 67 jaar
-// Prognose CPB 2033–2037: 67 jaar (koppeling levensverwachting)
-// Na 2037: onzeker — historisch stijgt AOW mee met levensverwachting
+// Officieel vastgesteld t/m AOW-jaar 2032: 67 jaar
+// Prognose CPB 2033–2037: 67 jaar
+// Na 2037: indicatie 68 jaar
 export function berekenAow(geboortejaar) {
   const aowJaar = geboortejaar + 67;
   if (aowJaar <= 2032) return {
@@ -34,10 +31,15 @@ export function berekenAow(geboortejaar) {
   };
 }
 
+// AOW bedragen 2025 (netto per maand)
+// Alleenstaande: €1.450, Samenwonend/gehuwd: €1.007 per persoon
+export const AOW_ALLEENSTAAND  = 1450;
+export const AOW_SAMENWONEND   = 1007;
+
 // ─── HYPOTHEEK ────────────────────────────────────────────────────────────────
 export function berekenHypoDeel(deel) {
-  const r     = deel.rente / 100 / 12;
-  const totM  = deel.looptijdJaar * 12;
+  const r      = deel.rente / 100 / 12;
+  const totM   = deel.looptijdJaar * 12;
   const verstM = (2025 - deel.startjaar) * 12;
   const eindjaar = deel.startjaar + deel.looptijdJaar;
 
@@ -76,7 +78,21 @@ export function bouwPrognose(leeftijd, stopLeeftijd, vermNu, inlegMnd, rendement
   return data;
 }
 
-// ─── PENSIOEN ─────────────────────────────────────────────────────────────────
-export function berekenJaarruimte(bruto) {
-  return Math.max(0, Math.round(Math.max(0, bruto - FRANCHISE) * JAARRUIMTE_PCT - 5000));
+// ─── JAARRUIMTE ───────────────────────────────────────────────────────────────
+// ZZP: geen factor A, volledige 30% van premiegrondslag
+// Loondienst: factor A (pensioenopbouw werkgever) verlaagt de ruimte
+//   Formule: (13,3% × premiegrondslag) - (6,27 × factor_A) - drempelaftrek
+//   Factor A = jaarlijkse pensioenopbouw in euro's (staat op je UPO)
+//   Drempelaftrek 2025: € 0 (afgeschaft)
+//   Premiegrondslag = bruto - AOW-franchise (€ 17.545)
+export function berekenJaarruimte(bruto, werkType, factorA) {
+  const premiegrondslag = Math.max(0, bruto - 17545);
+  if (werkType === "zzp") {
+    // ZZP: 30% van premiegrondslag, max €34.550 (2025)
+    return Math.min(34550, Math.max(0, Math.round(premiegrondslag * 0.30)));
+  }
+  // Loondienst: 13,3% minus factor A correctie
+  const factorABedrag = factorA || 0;
+  const ruimte = (premiegrondslag * 0.133) - (6.27 * factorABedrag);
+  return Math.min(34550, Math.max(0, Math.round(ruimte)));
 }

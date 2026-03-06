@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, ResponsiveContainer } from 'recharts';
 import { C } from '../tokens.js';
-import { INFLATIE, AOW_MAAND, FIRE_PCT } from '../tokens.js';
-import { eur, berekenOnderhoud, berekenAow, berekenHypoDeel, bouwPrognose, berekenJaarruimte } from '../utils.js';
+import { INFLATIE, FIRE_PCT } from '../tokens.js';
+import { eur, berekenOnderhoud, berekenAow, berekenHypoDeel, bouwPrognose, berekenJaarruimte, AOW_ALLEENSTAAND, AOW_SAMENWONEND } from '../utils.js';
 import { CATS, ALLE_ITEMS } from '../data/lifestyle.js';
 import { Card, Kop, Lbl, Inp, Slider, Metric, InfoBox, BarVoortgang, StapBtn, TipTool } from './Atoms.jsx';
 
@@ -14,12 +14,21 @@ const STAPPEN = [
   { id: "prognose",  label: "Jouw vrijheidsplan"   },
 ];
 
+// Kinderen uit huis op gemiddeld 23 jaar
+const UITWONEN_LEEFTIJD = 23;
+
 export default function VrijheidsWizard() {
-  const [stap, setStap]         = useState(0);
+  const [stap, setStap]           = useState(0);
   const [openGroep, setOpenGroep] = useState("Wonen");
 
   const [profiel, setProfiel] = useState({
-    naam: "", geboortejaar: 1985, stopLeeftijd: 55, inkomen: 72000, partner: false,
+    naam: "",
+    geboortejaar: 1985,
+    stopLeeftijd: 55,
+    inkomen: 72000,
+    partner: false,
+    werkType: "loondienst", // "loondienst" | "zzp"
+    kinderen: [],           // [{ id, geboortejaar }]
   });
 
   const defLS = Object.fromEntries(ALLE_ITEMS.map(i => [i.key, i.def]));
@@ -30,13 +39,18 @@ export default function VrijheidsWizard() {
     inleg: 1200, rendement: 6.5,
   });
 
-  const [pens, setPens] = useState({ werkgever: 800, eigen: 300, jaarruimte: 3000 });
+  const [pens, setPens] = useState({
+    werkgever: 800,
+    eigen: 300,
+    jaarruimteInleg: 3000,
+    factorA: 0, // alleen relevant voor loondienst
+  });
 
   const [leningen, setLeningen] = useState([
     { id: 1, label: "Leningdeel A", hoofdsom: 280000, rente: 4.2, looptijdJaar: 30, startjaar: 2020, soort: "annuiteit" },
   ]);
 
-  // ── derived ──────────────────────────────────────────────────────────────────
+  // ── Afgeleide waarden ──────────────────────────────────────────────────────
   const leeftijd     = 2025 - profiel.geboortejaar;
   const aow          = berekenAow(profiel.geboortejaar);
   const jarenTotStop = profiel.stopLeeftijd - leeftijd;
@@ -44,19 +58,36 @@ export default function VrijheidsWizard() {
   const aowGat       = profiel.stopLeeftijd < aow.leeftijd;
   const jarenGat     = aowGat ? aow.leeftijd - profiel.stopLeeftijd : 0;
 
-  const autoOnderhoud    = ls.huurder ? 0 : berekenOnderhoud(ls.woningWaarde, ls.bouwjaar);
-  const jaarruimteCalc   = berekenJaarruimte(profiel.inkomen);
+  // AOW bedrag afhankelijk van partnerstatus
+  const aowMaand = profiel.partner ? AOW_SAMENWONEND : AOW_ALLEENSTAAND;
 
+  // Kinderen die nog thuis zijn op stopleeftijd
+  const kinderenThuis = profiel.kinderen.filter(k => {
+    const leeftijdOpStop = (profiel.geboortejaar + profiel.stopLeeftijd) - k.geboortejaar;
+    return leeftijdOpStop < UITWONEN_LEEFTIJD;
+  });
+  const kinderenWegOpStop = profiel.kinderen.filter(k => {
+    const leeftijdOpStop = (profiel.geboortejaar + profiel.stopLeeftijd) - k.geboortejaar;
+    return leeftijdOpStop >= UITWONEN_LEEFTIJD;
+  });
+
+  // Kosten kinderen die al weg zijn op stopleeftijd → vallen weg
+  const kostenPerKindMnd = ls.kinderen / Math.max(profiel.kinderen.length, 1);
+  const kinderKostenWeg  = kinderenWegOpStop.length * kostenPerKindMnd;
+
+  // Hypotheek
+  const autoOnderhoud = ls.huurder ? 0 : berekenOnderhoud(ls.woningWaarde, ls.bouwjaar);
   const leningCalc    = leningen.map(d => ({ ...d, ...berekenHypoDeel(d) }));
   const hypoMaandNu   = leningCalc.reduce((s, d) => s + d.maand, 0);
   const hypoRestschuld= leningCalc.reduce((s, d) => s + d.restschuld, 0);
   const hypoOpStop    = leningCalc.reduce((s, d) => d.eindjaar > stopJaar ? s + d.maand : s, 0);
   const hypotheekVrij = !ls.huurder && leningen.length > 0 && hypoOpStop === 0;
 
+  // Effectieve lifestyle nu
   const effLs = {
     ...ls,
     onderhoud: ls.huurder ? 0 : autoOnderhoud,
-    huurHypo: !ls.huurder && hypoMaandNu > 0 ? hypoMaandNu : ls.huurHypo,
+    huurHypo:  !ls.huurder && hypoMaandNu > 0 ? hypoMaandNu : ls.huurHypo,
   };
 
   const maandNu = ALLE_ITEMS.reduce((s, item) => {
@@ -64,13 +95,25 @@ export default function VrijheidsWizard() {
     return s + (item.div ? v / item.div : v);
   }, 0);
 
-  const maandOpStop   = !ls.huurder && hypoMaandNu > 0 ? maandNu - hypoMaandNu + hypoOpStop : maandNu;
-  const jaarOpStop    = maandOpStop * 12 * Math.pow(1 + INFLATIE, jarenTotStop);
-  const cashNodig     = maandNu * 6;
-  const heeftBuffer   = verm.sparen >= cashNodig;
+  // Maanduitgaven op stopleeftijd:
+  // - hypotheek kan zijn afgelost (al berekend in hypoOpStop)
+  // - kinderen die al op eigen benen staan vallen weg
+  let maandOpStop = maandNu;
+  if (!ls.huurder && hypoMaandNu > 0) {
+    maandOpStop = maandOpStop - hypoMaandNu + hypoOpStop;
+  }
+  maandOpStop = Math.max(0, maandOpStop - kinderKostenWeg);
 
-  const aowBij   = aowGat ? 0 : AOW_MAAND;
-  const pensBij  = aowGat ? 0 : pens.werkgever + pens.eigen;
+  const jaarOpStop  = maandOpStop * 12 * Math.pow(1 + INFLATIE, jarenTotStop);
+  const cashNodig   = maandNu * 6;
+  const heeftBuffer = verm.sparen >= cashNodig;
+
+  // Jaarruimte
+  const jaarruimteCalc = berekenJaarruimte(profiel.inkomen, profiel.werkType, pens.factorA);
+
+  // Benodigde kapitaal
+  const aowBij  = aowGat ? 0 : aowMaand;
+  const pensBij = aowGat ? 0 : pens.werkgever + pens.eigen;
   const benodigdKap = Math.max(0, jaarOpStop - (aowBij + pensBij) * 12) / FIRE_PCT;
 
   const totaalVerm = verm.beleggingen + verm.sparen + verm.lijfrente + verm.overig;
@@ -91,11 +134,21 @@ export default function VrijheidsWizard() {
     return b > 50 && m > 0 && m < b * 0.5;
   });
 
-  // helpers
-  const setL  = (k, v) => setLs(p  => ({ ...p, [k]: v }));
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  const setL  = (k, v) => setLs(p => ({ ...p, [k]: v }));
   const setP  = (k, v) => setProfiel(p => ({ ...p, [k]: v }));
   const setV  = (k, v) => setVerm(p => ({ ...p, [k]: v }));
   const setPn = (k, v) => setPens(p => ({ ...p, [k]: v }));
+
+  function addKind() {
+    setP("kinderen", [...profiel.kinderen, { id: Date.now(), geboortejaar: 2015 }]);
+  }
+  function delKind(id) {
+    setP("kinderen", profiel.kinderen.filter(k => k.id !== id));
+  }
+  function updKind(id, geboortejaar) {
+    setP("kinderen", profiel.kinderen.map(k => k.id === id ? { ...k, geboortejaar } : k));
+  }
 
   function addLening() {
     setLeningen(p => [...p, {
@@ -107,11 +160,11 @@ export default function VrijheidsWizard() {
   const delLening = id => setLeningen(p => p.filter(d => d.id !== id));
   const updLening = (id, k, v) => setLeningen(p => p.map(d => d.id === id ? { ...d, [k]: v } : d));
 
-  // ── RENDER ────────────────────────────────────────────────────────────────────
+  // ── RENDER ─────────────────────────────────────────────────────────────────
   return (
     <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 28 }}>
 
-      {/* Sidebar */}
+      {/* ── Sidebar ── */}
       <div>
         <Card style={{ position: "sticky", top: 80 }}>
           <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 13, color: C.muted, marginBottom: 16, textTransform: "uppercase", letterSpacing: "0.08em" }}>
@@ -133,38 +186,121 @@ export default function VrijheidsWizard() {
         </Card>
       </div>
 
-      {/* Main */}
+      {/* ── Main ── */}
       <div className="fu">
 
-        {/* ── STAP 1: PROFIEL ── */}
+        {/* ════════════════════════════════════════════════════════════
+            STAP 1 — PROFIEL
+        ════════════════════════════════════════════════════════════ */}
         {stap === 0 && (
           <Card accent={C.gold}>
             <Kop size={26} sub="Laten we beginnen met de basis. Alle berekeningen blijven lokaal op jouw apparaat.">
               Jouw situatie
             </Kop>
+
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginTop: 24 }}>
+
+              {/* Naam */}
               <div>
                 <Lbl>Naam (optioneel)</Lbl>
                 <Inp type="text" value={profiel.naam} onChange={v => setP("naam", v)} placeholder="Voor de persoonlijke touch" />
               </div>
+
+              {/* Geboortejaar */}
               <div>
                 <Lbl info="Je geboortejaar — we berekenen hieruit je leeftijd én AOW-leeftijd.">Geboortejaar</Lbl>
                 <Inp value={profiel.geboortejaar} onChange={v => setP("geboortejaar", v)} suffix={`(${leeftijd} jaar)`} />
               </div>
+
+              {/* Stopleeftijd */}
               <div style={{ gridColumn: "1 / -1" }}>
                 <Slider label="Wanneer wil je financieel vrij zijn?" value={profiel.stopLeeftijd}
                   onChange={v => setP("stopLeeftijd", v)} min={leeftijd + 1} max={75}
                   fmt={v => `${v} jaar (over ${v - leeftijd} jaar)`} />
               </div>
+
+              {/* Inkomen */}
               <div>
                 <Lbl info="Bruto jaarsalaris incl. vakantiegeld. ZZP: gemiddelde jaarwinst.">Bruto jaarinkomen</Lbl>
                 <Inp value={profiel.inkomen} onChange={v => setP("inkomen", v)} prefix="€" />
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input type="checkbox" id="partner2" checked={profiel.partner} onChange={e => setP("partner", e.target.checked)} />
-                <label htmlFor="partner2" style={{ fontSize: 14, color: C.text, cursor: "pointer" }}>
-                  Ik plan samen met een partner
-                </label>
+
+              {/* Werksituatie */}
+              <div>
+                <Lbl info="Bepaalt hoe je jaarruimte berekend wordt. ZZP heeft geen factor A.">Werksituatie</Lbl>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {[["loondienst", "In loondienst"], ["zzp", "ZZP / ondernemer"]].map(([val, lbl]) => (
+                    <button key={val} onClick={() => setP("werkType", val)}
+                      style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: `2px solid ${profiel.werkType === val ? C.gold : C.border}`, background: profiel.werkType === val ? C.goldPale : C.surface, color: profiel.werkType === val ? C.gold : C.muted, fontWeight: profiel.werkType === val ? 600 : 400, fontSize: 13 }}>
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Partner */}
+              <div style={{ gridColumn: "1 / -1" }}>
+                <div
+                  onClick={() => setP("partner", !profiel.partner)}
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderRadius: 12, border: `2px solid ${profiel.partner ? C.gold : C.border}`, background: profiel.partner ? C.goldPale : C.surface, cursor: "pointer" }}>
+                  <div style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${profiel.partner ? C.gold : C.border}`, background: profiel.partner ? C.gold : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    {profiel.partner && <span style={{ color: "#fff", fontSize: 13, fontWeight: 700 }}>✓</span>}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: profiel.partner ? C.gold : C.text }}>Ik plan samen met een partner</div>
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+                      {profiel.partner
+                        ? `AOW: ${eur(AOW_SAMENWONEND)}/mnd per persoon (samenwonend tarief)`
+                        : `AOW: ${eur(AOW_ALLEENSTAAND)}/mnd (alleenstaand tarief)`}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Kinderen */}
+              <div style={{ gridColumn: "1 / -1" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <Lbl info="Kinderen die vóór je stopleeftijd het huis uit gaan zorgen voor lagere uitgaven.">Kinderen</Lbl>
+                  <button onClick={addKind}
+                    style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "5px 14px", fontSize: 13, color: C.muted, fontWeight: 500 }}>
+                    + Kind toevoegen
+                  </button>
+                </div>
+                {profiel.kinderen.length === 0 && (
+                  <div style={{ fontSize: 13, color: C.dim, fontStyle: "italic" }}>Geen kinderen ingevuld</div>
+                )}
+                {profiel.kinderen.map(k => {
+                  const leeftijdNu   = 2025 - k.geboortejaar;
+                  const leeftijdStop = (profiel.geboortejaar + profiel.stopLeeftijd) - k.geboortejaar;
+                  const uitHuis = leeftijdStop >= UITWONEN_LEEFTIJD;
+                  return (
+                    <div key={k.id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "10px 14px", background: C.surface, borderRadius: 10, border: `1px solid ${C.border}` }}>
+                      <span style={{ fontSize: 18 }}>👶</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 13, color: C.muted }}>Geboortejaar:</span>
+                          <input type="number" value={k.geboortejaar}
+                            onChange={e => updKind(k.id, parseInt(e.target.value) || 2015)}
+                            style={{ width: 80, background: C.card, border: `1px solid ${C.border}`, borderRadius: 7, padding: "4px 8px", fontSize: 13, fontFamily: "'DM Mono',monospace", color: C.text }} />
+                          <span style={{ fontSize: 12, color: C.muted }}>({leeftijdNu} jaar nu)</span>
+                        </div>
+                        <div style={{ fontSize: 11, marginTop: 4, color: uitHuis ? C.greenLight : C.gold, fontWeight: 500 }}>
+                          {uitHuis
+                            ? `✓ Op stopleeftijd al ${leeftijdStop} jaar — kosten vallen weg`
+                            : `Op stopleeftijd ${leeftijdStop} jaar — nog thuis`}
+                        </div>
+                      </div>
+                      <button onClick={() => delKind(k.id)}
+                        style={{ background: "transparent", border: "none", color: C.dim, fontSize: 18, padding: "0 4px" }}>×</button>
+                    </div>
+                  );
+                })}
+                {kinderenWegOpStop.length > 0 && (
+                  <InfoBox type="goed">
+                    {kinderenWegOpStop.length === 1 ? "1 kind is" : `${kinderenWegOpStop.length} kinderen zijn`} op je stopleeftijd al het huis uit.
+                    Dit bespaart <strong>{eur(kinderKostenWeg)}/mnd</strong> op je vrijheidsgetal.
+                  </InfoBox>
+                )}
               </div>
             </div>
 
@@ -179,22 +315,39 @@ export default function VrijheidsWizard() {
                   {aow.disclaimer && <div style={{ fontSize: 11, color: C.textSub, marginTop: 6, lineHeight: 1.6 }}>⚠️ {aow.disclaimer}</div>}
                   {aowGat && <div style={{ marginTop: 8, fontSize: 13, fontWeight: 600, color: C.red }}>AOW-gat: {jarenGat} jaar — je moet dit zelf overbruggen</div>}
                 </div>
-                <span style={{ fontSize: 10, background: aow.zeker ? `${C.greenLight}20` : `${C.gold}20`, color: aow.zeker ? C.green : C.gold, padding: "2px 10px", borderRadius: 10, fontWeight: 600, textTransform: "uppercase", flexShrink: 0, marginLeft: 10 }}>
-                  {aow.zeker ? "Officieel ✓" : "Indicatie"}
-                </span>
+                <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
+                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, color: aow.zeker ? C.greenLight : C.gold, fontWeight: 600 }}>
+                    {eur(aowMaand)}/mnd
+                  </div>
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>
+                    {profiel.partner ? "samenwonend tarief" : "alleenstaand tarief"}
+                  </div>
+                  <span style={{ fontSize: 10, background: aow.zeker ? `${C.greenLight}20` : `${C.gold}20`, color: aow.zeker ? C.green : C.gold, padding: "2px 10px", borderRadius: 10, fontWeight: 600, textTransform: "uppercase", display: "inline-block", marginTop: 4 }}>
+                    {aow.zeker ? "Officieel ✓" : "Indicatie"}
+                  </span>
+                </div>
               </div>
             </div>
 
             <div style={{ marginTop: 14 }}>
-              <InfoBox>Je wil stoppen op <strong>{profiel.stopLeeftijd} jaar</strong> — over <strong>{jarenTotStop} jaar</strong>. {aowGat ? `AOW begint pas op ${aow.leeftijd} — een gat van ${jarenGat} jaar om zelf te overbruggen.` : "Op je stopdatum ontvang je al AOW."}</InfoBox>
+              <InfoBox>
+                Je wil stoppen op <strong>{profiel.stopLeeftijd} jaar</strong> — over <strong>{jarenTotStop} jaar</strong>.{" "}
+                {aowGat
+                  ? `AOW begint pas op ${aow.leeftijd} — een gat van ${jarenGat} jaar om zelf te overbruggen.`
+                  : `Op je stopdatum ontvang je al ${eur(aowMaand)}/mnd AOW.`}
+                {profiel.partner && " Je partner ontvangt ook AOW op basis van het samenwonend tarief."}
+              </InfoBox>
             </div>
+
             <button onClick={() => setStap(1)} style={{ marginTop: 20, background: C.gold, border: "none", borderRadius: 12, padding: "13px 28px", color: "#fff", fontWeight: 600, fontSize: 15 }}>
               Volgende → Levensstijl
             </button>
           </Card>
         )}
 
-        {/* ── STAP 2: LIFESTYLE ── */}
+        {/* ════════════════════════════════════════════════════════════
+            STAP 2 — LIFESTYLE
+        ════════════════════════════════════════════════════════════ */}
         {stap === 1 && (
           <div>
             <Card accent={C.gold} style={{ marginBottom: 14 }}>
@@ -275,8 +428,8 @@ export default function VrijheidsWizard() {
                         </div>
                         <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
                           {[
-                            { lbl: "Maandlast nu",           val: `${eur(c.maand || 0)}/mnd`,                                    clr: C.gold        },
-                            { lbl: "Restschuld nu",          val: eur(c.restschuld || 0),                                        clr: C.red         },
+                            { lbl: "Maandlast nu",           val: `${eur(c.maand || 0)}/mnd`,                                        clr: C.gold        },
+                            { lbl: "Restschuld nu",          val: eur(c.restschuld || 0),                                            clr: C.red         },
                             { lbl: `Op ${profiel.stopLeeftijd}j`, val: aflVoorStop ? "€0 — afgelost ✓" : `${eur(c.maand || 0)}/mnd`, clr: aflVoorStop ? C.greenLight : C.text },
                           ].map((k, i) => (
                             <div key={i} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 14px" }}>
@@ -335,15 +488,20 @@ export default function VrijheidsWizard() {
                     <div style={{ padding: "0 20px 20px", borderTop: `1px solid ${C.border}` }}>
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 16 }}>
                         {groep.items.map(item => {
-                          const v  = effLs[item.key] || 0;
-                          const bM = item.div ? item.bench / item.div : item.bench;
-                          const vM = item.div ? v / item.div : v;
+                          const v   = effLs[item.key] || 0;
+                          const bM  = item.div ? item.bench / item.div : item.bench;
+                          const vM  = item.div ? v / item.div : v;
                           const low = bM > 50 && vM > 0 && vM < bM * 0.5;
                           return (
                             <div key={item.key}>
                               <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
                                 <span style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 500 }}>{item.label}</span>
-                                {item.info && <span title={item.info} style={{ width: 15, height: 15, borderRadius: "50%", background: C.surface, border: `1px solid ${C.border}`, fontSize: 9, color: C.muted, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", flexShrink: 0 }}>?</span>}
+                                {item.info && (
+                                  <span title={item.info}
+                                    style={{ width: 16, height: 16, borderRadius: "50%", background: C.goldPale, border: `1px solid ${C.gold}50`, fontSize: 10, color: C.gold, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", flexShrink: 0, fontWeight: 700 }}>
+                                    ?
+                                  </span>
+                                )}
                               </div>
                               {item.auto ? (
                                 <div style={{ background: C.goldPale, border: `1px solid ${C.gold}30`, borderRadius: 10, padding: "9px 14px", display: "flex", justifyContent: "space-between" }}>
@@ -377,8 +535,13 @@ export default function VrijheidsWizard() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 22, fontWeight: 600, color: C.text }}>Totale maanduitgaven</div>
-                  <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>jouw vrijheidsgetal</div>
-                  {hypotheekVrij && <div style={{ fontSize: 12, color: C.greenLight, marginTop: 4 }}>✓ Hypotheekvrij op stopleeftijd</div>}
+                  <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>jouw vrijheidsgetal op stopleeftijd</div>
+                  {hypotheekVrij && <div style={{ fontSize: 12, color: C.greenLight, marginTop: 3 }}>✓ Hypotheekvrij op stopleeftijd</div>}
+                  {kinderenWegOpStop.length > 0 && (
+                    <div style={{ fontSize: 12, color: C.greenLight, marginTop: 3 }}>
+                      ✓ {kinderenWegOpStop.length === 1 ? "1 kind" : `${kinderenWegOpStop.length} kinderen`} al het huis uit ({eur(kinderKostenWeg)}/mnd minder)
+                    </div>
+                  )}
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 36, color: C.gold, fontWeight: 500 }}>{eur(maandOpStop)}</div>
@@ -403,7 +566,9 @@ export default function VrijheidsWizard() {
           </div>
         )}
 
-        {/* ── STAP 3: VERMOGEN ── */}
+        {/* ════════════════════════════════════════════════════════════
+            STAP 3 — VERMOGEN
+        ════════════════════════════════════════════════════════════ */}
         {stap === 2 && (
           <Card accent={C.greenLight}>
             <Kop size={26} sub="Wat heb je al opgebouwd? En hoeveel leg je maandelijks in?">Huidig vermogen</Kop>
@@ -441,49 +606,99 @@ export default function VrijheidsWizard() {
           </Card>
         )}
 
-        {/* ── STAP 4: PENSIOEN ── */}
+        {/* ════════════════════════════════════════════════════════════
+            STAP 4 — PENSIOEN
+        ════════════════════════════════════════════════════════════ */}
         {stap === 3 && (
           <Card accent={C.gold}>
             <Kop size={26} sub="Pensioen is vermogen dat je later ontgrendelt. We rekenen alles mee.">Pensioen & AOW</Kop>
+
+            {/* AOW blok */}
             <div style={{ marginTop: 20, background: aow.zeker ? C.greenPale : C.goldPale, borderRadius: 12, padding: "16px 18px", border: `1px solid ${(aow.zeker ? C.greenLight : C.gold)}40`, marginBottom: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>AOW-leeftijd: {aow.leeftijd} jaar — {aow.bron}</div>
                   {aow.disclaimer && <div style={{ fontSize: 11, color: C.textSub, marginTop: 4, lineHeight: 1.6 }}>{aow.disclaimer}</div>}
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
+                    {profiel.partner ? "Samenwonend tarief — jij én je partner ontvangen elk dit bedrag" : "Alleenstaand tarief"}
+                  </div>
                 </div>
-                <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, color: aow.zeker ? C.greenLight : C.gold, fontWeight: 600 }}>
-                  {eur(AOW_MAAND)}/mnd
+                <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
+                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 22, color: aow.zeker ? C.greenLight : C.gold, fontWeight: 600 }}>
+                    {eur(aowMaand)}/mnd
+                  </div>
+                  {profiel.partner && (
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>per persoon</div>
+                  )}
                 </div>
               </div>
             </div>
+
+            {/* Pensioen invoer */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-              {[
-                { k: "werkgever",  lbl: "Werkgeverspensioen op pensioenleeftijd", info: "Zie je UPO via mijnpensioenoverzicht.nl.", sfx: "/mnd"  },
-                { k: "eigen",      lbl: "Eigen pensioen / lijfrente",             info: "Banksparen of lijfrente.", sfx: "/mnd"  },
-                { k: "jaarruimte", lbl: "Jaarlijkse lijfrente-inleg nu",          info: "Hoeveel je per jaar inlegt in een fiscaal aantrekkelijk product.", sfx: "/jaar" },
-              ].map(f => (
-                <div key={f.k}>
-                  <Lbl info={f.info}>{f.lbl}</Lbl>
-                  <Inp value={pens[f.k]} onChange={v => setPn(f.k, v)} prefix="€" suffix={f.sfx} />
+              <div>
+                <Lbl info="Verwacht pensioen via je werkgever op pensioenleeftijd. Zie je UPO via mijnpensioenoverzicht.nl.">Werkgeverspensioen</Lbl>
+                <Inp value={pens.werkgever} onChange={v => setPn("werkgever", v)} prefix="€" suffix="/mnd" />
+              </div>
+              <div>
+                <Lbl info="Pensioen uit eigen bankspaarrekening of lijfrente.">Eigen pensioen / lijfrente</Lbl>
+                <Inp value={pens.eigen} onChange={v => setPn("eigen", v)} prefix="€" suffix="/mnd" />
+              </div>
+              <div>
+                <Lbl info="Hoeveel je dit jaar inlegt in een lijfrente of bankspaarproduct.">Jaarlijkse lijfrente-inleg nu</Lbl>
+                <Inp value={pens.jaarruimteInleg} onChange={v => setPn("jaarruimteInleg", v)} prefix="€" suffix="/jaar" />
+              </div>
+              {profiel.werkType === "loondienst" && (
+                <div>
+                  <Lbl info="Factor A staat op je UPO (Uniform Pensioenoverzicht). Het is de jaarlijkse pensioenopbouw in euro's. Vermenigvuldigd met 6,27 verlaagt het je jaarruimte.">Factor A (UPO)</Lbl>
+                  <Inp value={pens.factorA} onChange={v => setPn("factorA", v)} prefix="€" suffix="/jaar" />
                 </div>
-              ))}
+              )}
             </div>
+
+            {/* Jaarruimte uitleg */}
             <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 12 }}>
               <Card style={{ background: C.greenPale, border: `1px solid ${C.greenLight}40` }}>
-                <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 17, fontWeight: 600, marginBottom: 8 }}>Jaarruimte 2025</div>
-                <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 12 }}>De jaarruimte is het bedrag dat je fiscaal aftrekbaar in een lijfrente mag inleggen. Je verlaagt nu je Box 1 belasting én bouwt pensioenkapitaal op.</p>
-                <div style={{ display: "flex", justifyContent: "space-between", background: C.card, borderRadius: 8, padding: "10px 14px" }}>
-                  <span style={{ fontSize: 13, color: C.muted }}>Geschatte jaarruimte voor jou</span>
-                  <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 16, color: C.greenLight, fontWeight: 700 }}>{eur(jaarruimteCalc)}/jaar</span>
+                <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 17, fontWeight: 600, marginBottom: 8 }}>
+                  Jaarruimte 2025 — {profiel.werkType === "zzp" ? "ZZP" : "Loondienst"}
                 </div>
-                {pens.jaarruimte < jaarruimteCalc && (
+                {profiel.werkType === "zzp" ? (
+                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 12 }}>
+                    Als ZZP'er heb je geen werkgeverspensioen en dus geen factor A. Je mag 30% van je premiegrondslag (bruto minus €17.545) inleggen, tot max €34.550 per jaar.
+                  </p>
+                ) : (
+                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 12 }}>
+                    In loondienst bouwt je werkgever al pensioen voor je op (factor A). Je jaarruimte is 13,3% van je premiegrondslag, minus 6,27 × factor A. Vul je factor A in vanuit je UPO voor een nauwkeurige berekening.
+                  </p>
+                )}
+                <div style={{ background: C.card, borderRadius: 8, padding: "10px 14px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 13, color: C.muted }}>Jouw geschatte jaarruimte</span>
+                    <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 16, color: C.greenLight, fontWeight: 700 }}>{eur(jaarruimteCalc)}/jaar</span>
+                  </div>
+                  {profiel.werkType === "loondienst" && pens.factorA > 0 && (
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
+                      Correctie factor A: {eur(pens.factorA)} × 6,27 = {eur(pens.factorA * 6.27)} minder ruimte
+                    </div>
+                  )}
+                </div>
+                {pens.jaarruimteInleg < jaarruimteCalc && (
                   <div style={{ marginTop: 10 }}>
-                    <InfoBox type="goed">Je benut {eur(pens.jaarruimte)} van {eur(jaarruimteCalc)}. <strong>{eur(jaarruimteCalc - pens.jaarruimte)} extra</strong> mag belastingvrij ingelegd.</InfoBox>
+                    <InfoBox type="goed">
+                      Je benut {eur(pens.jaarruimteInleg)} van {eur(jaarruimteCalc)}.{" "}
+                      <strong>{eur(jaarruimteCalc - pens.jaarruimteInleg)} extra</strong> mag belastingvrij ingelegd.
+                    </InfoBox>
                   </div>
                 )}
               </Card>
-              {aowGat && <InfoBox type="let_op">AOW-gat: {jarenGat} jaar. Zorg voor minimaal {eur(maandNu * 12 * jarenGat)} liquide om de periode tot je {aow.leeftijd}e te overbruggen.</InfoBox>}
+
+              {aowGat && (
+                <InfoBox type="let_op">
+                  AOW-gat: {jarenGat} jaar. Zorg voor minimaal {eur(maandNu * 12 * jarenGat)} liquide om de periode tot je {aow.leeftijd}e te overbruggen.
+                </InfoBox>
+              )}
             </div>
+
             <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
               <button onClick={() => setStap(2)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "13px 22px", color: C.muted, fontWeight: 500, fontSize: 14 }}>← Terug</button>
               <button onClick={() => setStap(4)} style={{ background: C.gold, border: "none", borderRadius: 12, padding: "13px 28px", color: "#fff", fontWeight: 600, fontSize: 15 }}>Bekijk mijn vrijheidsplan →</button>
@@ -491,7 +706,9 @@ export default function VrijheidsWizard() {
           </Card>
         )}
 
-        {/* ── STAP 5: PROGNOSE ── */}
+        {/* ════════════════════════════════════════════════════════════
+            STAP 5 — PROGNOSE
+        ════════════════════════════════════════════════════════════ */}
         {stap === 4 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <Card accent={doelBereikt ? C.greenLight : C.gold} style={{ background: doelBereikt ? C.greenPale : C.goldPale }}>
@@ -552,7 +769,7 @@ export default function VrijheidsWizard() {
                 ].map((sc, i) => {
                   const scData = bouwPrognose(leeftijd, profiel.stopLeeftijd + sc.extraJaar, totaalVerm, verm.inleg + sc.extraInleg, (verm.rendement + sc.extraRend) / 100, benodigdKap);
                   const scVerm = scData.find(d => d.leeftijd === profiel.stopLeeftijd + sc.extraJaar)?.vermogen || 0;
-                  const diff = scVerm - vermOpStop;
+                  const diff   = scVerm - vermOpStop;
                   return (
                     <div key={i} style={{ background: C.surface, borderRadius: 12, padding: 16, border: `1px solid ${C.border}` }}>
                       <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, lineHeight: 1.4 }}>{sc.lbl}</div>
@@ -571,10 +788,11 @@ export default function VrijheidsWizard() {
               <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 10 }}>
                 {[
                   !heeftBuffer && { icon: "🛡", title: "Bouw eerst je cashbuffer op", text: `Je hebt nog ${eur(cashNodig - verm.sparen)} nodig voor 6 maanden buffer.` },
-                  pens.jaarruimte < jaarruimteCalc && { icon: "💰", title: "Benut je jaarruimte volledig", text: `Je kunt nog ${eur(jaarruimteCalc - pens.jaarruimte)}/jaar extra inleggen in een lijfrente.` },
-                  aowGat && { icon: "⏳", title: `Plan je AOW-gat van ${jarenGat} jaar`, text: `Je hebt ${eur(maandNu * 12 * jarenGat)} nodig om te overbruggen tot je ${aow.leeftijd}e.` },
+                  pens.jaarruimteInleg < jaarruimteCalc && { icon: "💰", title: "Benut je jaarruimte volledig", text: `Je kunt nog ${eur(jaarruimteCalc - pens.jaarruimteInleg)}/jaar extra inleggen in een lijfrente.` },
+                  aowGat && { icon: "⏳", title: `Plan je AOW-gat van ${jarenGat} jaar`, text: `Je hebt ${eur(aowMaand * 12 * jarenGat)} nodig om te overbruggen tot je ${aow.leeftijd}e.` },
                   !aow.zeker && { icon: "📋", title: "Houd AOW-wijzigingen bij", text: "Jouw AOW-leeftijd is nog niet officieel vastgesteld. Check jaarlijks rijksoverheid.nl." },
                   hypotheekVrij && { icon: "🏠", title: "Hypotheekvrij voordeel", text: `Je bent hypotheekvrij op je stopleeftijd. Maandlast van ${eur(hypoMaandNu)} valt weg.` },
+                  kinderenWegOpStop.length > 0 && { icon: "👶", title: "Kinderkosten vallen weg", text: `${kinderenWegOpStop.length === 1 ? "1 kind is" : `${kinderenWegOpStop.length} kinderen zijn`} op je stopleeftijd al het huis uit. Dit scheelt ${eur(kinderKostenWeg)}/mnd.` },
                   leningen.some(d => d.soort === "aflossingsvrij") && { icon: "⚠️", title: "Check je aflossingsvrije hypotheek", text: "Op de einddatum is de volledige hoofdsom ineens opeisbaar. Zorg voor een herfinancieringsplan." },
                   !doelBereikt && { icon: "📈", title: "Verhoog je maandelijkse inleg", text: `Met ${eur(Math.abs(verschil / (jarenTotStop * 12) * 1.2))} extra per maand bereik je je doel op tijd.` },
                   doelBereikt && { icon: "✦", title: "Je bent op koers", text: `Blijf consequent inleggen en herbalanceer jaarlijks. Over ${jarenTotStop} jaar pluk je de vruchten.` },
