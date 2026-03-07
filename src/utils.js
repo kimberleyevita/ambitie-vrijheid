@@ -9,9 +9,6 @@ export function berekenOnderhoud(woz, bouwjaar) {
 }
 
 // ─── AOW ──────────────────────────────────────────────────────────────────────
-// Officieel vastgesteld t/m AOW-jaar 2032: 67 jaar
-// Prognose CPB 2033–2037: 67 jaar
-// Na 2037: indicatie 68 jaar
 export function berekenAow(geboortejaar) {
   const aowJaar = geboortejaar + 67;
   if (aowJaar <= 2032) return {
@@ -22,77 +19,124 @@ export function berekenAow(geboortejaar) {
   if (aowJaar <= 2037) return {
     leeftijd: 67, zeker: false,
     bron: "Prognose CPB \u2014 nog niet wettelijk vastgesteld",
-    disclaimer: "De AOW-leeftijd voor jou is nog niet officieel vastgesteld. Op basis van de huidige koppeling aan levensverwachting wordt 67 jaar verwacht, maar dit kan wijzigen.",
+    disclaimer: "De AOW-leeftijd voor jou is nog niet officieel vastgesteld. Op basis van de huidige koppeling wordt 67 jaar verwacht, maar dit kan wijzigen.",
   };
   return {
     leeftijd: 68, zeker: false,
     bron: "Indicatie \u2014 mogelijk verhoging naar 68",
-    disclaimer: "Jouw AOW-leeftijd is nog ruimschoots onbekend. We rekenen voorzichtig met 68 jaar. Historisch stijgt de AOW-leeftijd mee met de levensverwachting.",
+    disclaimer: "Jouw AOW-leeftijd is nog ruimschoots onbekend. We rekenen voorzichtig met 68 jaar.",
   };
 }
 
-// AOW bedragen 2025 (netto per maand)
-// Alleenstaande: €1.450, Samenwonend/gehuwd: €1.007 per persoon
-export const AOW_ALLEENSTAAND  = 1450;
-export const AOW_SAMENWONEND   = 1007;
+export const AOW_ALLEENSTAAND = 1450;
+export const AOW_SAMENWONEND  = 1007;
 
 // ─── HYPOTHEEK ────────────────────────────────────────────────────────────────
 export function berekenHypoDeel(deel) {
-  const r      = deel.rente / 100 / 12;
-  const totM   = deel.looptijdJaar * 12;
-  const verstM = (2025 - deel.startjaar) * 12;
+  const r        = deel.rente / 100 / 12;
+  const totM     = deel.looptijdJaar * 12;
+  const verstM   = (2025 - deel.startjaar) * 12;
   const eindjaar = deel.startjaar + deel.looptijdJaar;
+  const restLooptijdJaar = Math.max(0, eindjaar - 2025);
 
-  if (verstM >= totM) return { maand: 0, restschuld: 0, eindjaar };
+  if (verstM >= totM) return { maand: 0, restschuld: 0, eindjaar, restLooptijdJaar: 0, schema: [] };
+
+  // Bouw aflossingsschema (restschuld per jaar vanaf 2025)
+  function maakSchema(startSaldo, maandFn) {
+    const schema = [];
+    let s = startSaldo;
+    for (let yr = 2025; yr <= eindjaar; yr++) {
+      schema.push({ jaar: yr, restschuld: Math.round(Math.max(0, s)) });
+      for (let m = 0; m < 12 && s > 0; m++) s = maandFn(s);
+    }
+    return schema;
+  }
 
   if (deel.soort === "aflossingsvrij") {
-    return { maand: r > 0 ? Math.round(deel.hoofdsom * r) : 0, restschuld: deel.hoofdsom, eindjaar };
+    const maand = r > 0 ? Math.round(deel.hoofdsom * r) : 0;
+    const schema = [];
+    for (let yr = 2025; yr <= eindjaar; yr++) {
+      schema.push({ jaar: yr, restschuld: deel.hoofdsom });
+    }
+    return { maand, restschuld: deel.hoofdsom, eindjaar, restLooptijdJaar, schema };
   }
+
   if (deel.soort === "lineair") {
     const mAfl  = deel.hoofdsom / totM;
     const saldo = Math.max(0, deel.hoofdsom - mAfl * verstM);
-    return { maand: Math.round(mAfl + saldo * r), restschuld: Math.round(saldo), eindjaar };
+    const maand = Math.round(mAfl + saldo * r);
+    const schema = maakSchema(saldo, s => Math.max(0, s - mAfl));
+    return { maand, restschuld: Math.round(saldo), eindjaar, restLooptijdJaar, schema };
   }
+
   // annuiteit
-  if (r === 0) return { maand: Math.round(deel.hoofdsom / totM), restschuld: 0, eindjaar };
+  if (r === 0) {
+    const maand = Math.round(deel.hoofdsom / totM);
+    const saldo = Math.max(0, deel.hoofdsom - maand * verstM);
+    const schema = maakSchema(saldo, s => Math.max(0, s - maand));
+    return { maand, restschuld: Math.round(saldo), eindjaar, restLooptijdJaar, schema };
+  }
+
   const ann = deel.hoofdsom * (r * Math.pow(1 + r, totM)) / (Math.pow(1 + r, totM) - 1);
   let saldo = deel.hoofdsom;
   for (let m = 0; m < Math.min(verstM, totM); m++) saldo = saldo * (1 + r) - ann;
-  return { maand: Math.round(ann), restschuld: Math.round(Math.max(0, saldo)), eindjaar };
+  saldo = Math.max(0, saldo);
+  const schema = maakSchema(saldo, s => Math.max(0, s * (1 + r) - ann));
+  return { maand: Math.round(ann), restschuld: Math.round(saldo), eindjaar, restLooptijdJaar, schema };
 }
 
-// ─── PROGNOSE ─────────────────────────────────────────────────────────────────
+// ─── PROGNOSE — 3 SCENARIO'S ──────────────────────────────────────────────────
+// rendPerCat = { beleggingen, sparen, lijfrente, overig }
+//   elk = { pess, midden, opt } als decimaal
+export function bouwPrognoseScenarios(leeftijd, stopLeeftijd, vermCats, rendPerCat, inlegMnd, doel) {
+  const jaren = stopLeeftijd - leeftijd;
+
+  function scenario(key) {
+    const startTotaal = vermCats.beleggingen + vermCats.sparen + vermCats.lijfrente + vermCats.overig;
+    let v = startTotaal;
+    const data = [];
+    for (let j = 0; j <= jaren; j++) {
+      data.push({ leeftijd: leeftijd + j, label: `${leeftijd + j}j`, vermogen: Math.round(v), doel: Math.round(doel) });
+      const t = Math.max(1, v);
+      const rend =
+        (vermCats.beleggingen / t) * rendPerCat.beleggingen[key] +
+        (vermCats.sparen      / t) * rendPerCat.sparen[key] +
+        (vermCats.lijfrente   / t) * rendPerCat.lijfrente[key] +
+        (vermCats.overig      / t) * rendPerCat.overig[key];
+      v = v * (1 + rend) + inlegMnd * 12;
+    }
+    return data;
+  }
+
+  return { pess: scenario("pess"), midden: scenario("midden"), opt: scenario("opt") };
+}
+
+// Enkelvoudige prognose (voor scenario-vergelijkingen in actieplan)
 export function bouwPrognose(leeftijd, stopLeeftijd, vermNu, inlegMnd, rendement, doel) {
   const data = [];
   let v = vermNu;
-  const maxJaar = Math.min(stopLeeftijd - leeftijd + 5, 50);
-  for (let j = 0; j <= maxJaar; j++) {
-    data.push({
-      leeftijd: leeftijd + j,
-      label: `${leeftijd + j}j`,
-      vermogen: Math.round(v),
-      doel: Math.round(doel),
-    });
+  for (let j = 0; j <= stopLeeftijd - leeftijd; j++) {
+    data.push({ leeftijd: leeftijd + j, label: `${leeftijd + j}j`, vermogen: Math.round(v), doel: Math.round(doel) });
     v = v * (1 + rendement) + inlegMnd * 12;
   }
   return data;
 }
 
 // ─── JAARRUIMTE ───────────────────────────────────────────────────────────────
-// ZZP: geen factor A, volledige 30% van premiegrondslag
-// Loondienst: factor A (pensioenopbouw werkgever) verlaagt de ruimte
-//   Formule: (13,3% × premiegrondslag) - (6,27 × factor_A) - drempelaftrek
-//   Factor A = jaarlijkse pensioenopbouw in euro's (staat op je UPO)
-//   Drempelaftrek 2025: € 0 (afgeschaft)
-//   Premiegrondslag = bruto - AOW-franchise (€ 17.545)
 export function berekenJaarruimte(bruto, werkType, factorA) {
   const premiegrondslag = Math.max(0, bruto - 17545);
-  if (werkType === "zzp") {
-    // ZZP: 30% van premiegrondslag, max €34.550 (2025)
-    return Math.min(34550, Math.max(0, Math.round(premiegrondslag * 0.30)));
-  }
-  // Loondienst: 13,3% minus factor A correctie
-  const factorABedrag = factorA || 0;
-  const ruimte = (premiegrondslag * 0.133) - (6.27 * factorABedrag);
+  if (werkType === "zzp") return Math.min(34550, Math.max(0, Math.round(premiegrondslag * 0.30)));
+  const ruimte = (premiegrondslag * 0.133) - (6.27 * (factorA || 0));
   return Math.min(34550, Math.max(0, Math.round(ruimte)));
 }
+
+// ─── STANDAARD RENDEMENTEN ────────────────────────────────────────────────────
+export const DEFAULT_REND = {
+  beleggingen: { pess: 0.04, midden: 0.07, opt: 0.10 },
+  sparen:      { pess: 0.015, midden: 0.025, opt: 0.035 },
+  lijfrente:   { pess: 0.04, midden: 0.06, opt: 0.08  },
+  overig:      { pess: 0.02, midden: 0.03, opt: 0.05  },
+};
+
+export const INFLATIE = 0.025;
+export const FIRE_PCT = 0.035;
