@@ -77,7 +77,25 @@ De bewoording liquide zegt de gemiddelde Nederlander ook niets.
 Bij huidig vermogen wil ik zelf rekeningen kunnen toevoegen. Label geven in welke categorie het valt en dan het gemiddeld rendement wat bij die categorie hoort al weergeven als ze het er niet mee eens zijn mogen ze dit wijzigen. Je ziet de wijzigingen dan direct in de grafiek eronder met op de x het aantal jaar en Y de waarde in geld. Ik wil het compounding effect laten zien. 
 Bij spaar of banktegoeden wil ik vooraf ingevuld de huidige marktrente. Kan je deze ergens ophalen? Ook uitleg erbij wat het rente percentage inhoud. Het doel van de verschillen tussen de verschillende type moet de gebruiker doen beseffen dat geld op verschillende manieren kan groeien. 
 De cashbusfer uitleggen waar we vanuit zijn gegaan. 
-
+- v0.5
+Bij hypotheek inzicht: hypotheek loopt nog x jaar door vanaf financieel vrije leeftijd. Eigenlijk liever: Je hebt nog x jaar hypotheek te betalen op je financieel vrije leeftijd. als het weinig is dan een leuke foto ofzo of plaatje of iets om het positief te benadrukken.
+Je kan ook een optie geven om deel in 1 keer van de hypotheek af te lossen. Misschien hebben ze dat namelijk in de planning staan en willen ze kijken wat dat voor het vermogen zou betekenen. 
+Bij wonen staat huur of hypotheek lasten. Als iemand zijn leningdelen al heeft ingevuld kan je dit toch ook al vooraf invullen? 
+Onderhoud woning hebben we in een eerder veld ook al ingevuld of geaccepteerd als automatisch berekend.
+Bij mobiliteit wordt gesproken over verzekeringen terwijl je bij verzekeringen ook al aangeeft. Dus dit is dan dubbelop
+We kunnen ook de categorie als drop down doen compact mid size etc. Of liever nederlandse benamingen en dan nog dat ze zelf een bedrag mogen invullen als ze het niet eens zijn met de vooraf opgestelde categorie.
+Het moet duidelijker worden gevisualiseerd wat allemaal moet worden meegenomen in de autokosten. Nu moet je cursor eerst over het vraagteken voordat je het ziet.
+Zullen we de boodschappen wekelijks
+Als je een nieuwe rekening ofzo toevoegt moet je gelijk naar dat stuk van de pagina springen waar je dan de gegevens gaat invullen.
+Bij jouw geld mis ik nog cash en vastgoed als vaste categorie.
+Er wordt gezegd dat je per categorie de verdeling kan aanpassen. Maar er is geen verdeler beschikbaar per categorie. 
+Het noodfonds is een kleine regel en nu niet zo goed zichtbaar. Deze mag beter worden weergegeve n bij jouw geld.
+Bij vermogensgroei moet er ook een uitleg worden gegeven dat het een combinatie is van alle verschillende bezittingen of geld wat ze hebben ingevuld.
+Het is onduidelijk dat je de titels van de verschillende rekeningen kan veranderen.
+Bij jouw geld ontbreekt dan schulden denk. Dit wordt van het vermogen nog afgehaald toch?
+Het verwacht pensioen bedrag komt dan toch voort uit de lijfrente spaarrekening als ze die hebben ingevuld bij de eerdere stap? Ze moeten de mogelijkheid hebben dit zelf nog aan te passen. Maar als ze lijfrente en pensioen rekeningen hebben toegevoegd ten behoeve van eigen pensioen dus kan dit vooraf worden ingevuld.
+Ik wil dat de output meer in een rapport wordt gemaakt met mooie visualisaties erbij die echte inzichten geven en aha momenten. Ik moet nu eerder gaan zoeken wat mis ik en hoe kan ik als ik een gat heb dit kan overbruggen.
+Opties op basis van de gegevens kunnen worden gegeven.
 ```
 
 ## Instructie voor Claude

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, ResponsiveContainer } from 'recharts';
+import { useState, useEffect, useRef } from 'react';
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import { C } from '../tokens.js';
 import { INFLATIE, FIRE_PCT } from '../tokens.js';
 import {
@@ -20,6 +20,33 @@ const STAPPEN = [
 ];
 
 const UITWONEN_LEEFTIJD = 23;
+
+// Mobiliteitskosten uitleg zichtbaar als blok
+const MOBILITEIT_UITLEG = [
+  { icon: "⛽", label: "Benzine / energie", sub: "Brandstof of stroom voor dagelijks gebruik" },
+  { icon: "📉", label: "Afschrijving", sub: "Auto verliest elk jaar waarde (~15%/jaar)" },
+  { icon: "🛡️", label: "Autoverzekering", sub: "WA, beperkt casco of allrisk" },
+  { icon: "🛣️", label: "Wegenbelasting", sub: "Motorrijtuigenbelasting per kwartaal" },
+  { icon: "🔧", label: "Onderhoud & APK", sub: "Banden, service, kleine reparaties" },
+  { icon: "🎲", label: "Onvoorzien", sub: "Pech, parkeerschade, extra kosten" },
+];
+
+const AUTO_PRESETS = [
+  { label: "Geen auto", waarde: 0 },
+  { label: "Klein & zuinig", waarde: 350, sub: "Bijv. Citroën C1, tweedehands" },
+  { label: "Gemiddeld", waarde: 600, sub: "Bijv. VW Golf, Peugeot 308" },
+  { label: "Elektrisch", waarde: 500, sub: "Lagere brandstof, hogere afschrijving" },
+  { label: "Luxe / groot", waarde: 950, sub: "Bijv. BMW, SUV" },
+  { label: "Zelf invullen", waarde: null },
+];
+
+const BOODSCHAPPEN_PRESETS = [
+  { label: "Sober", waarde: 280, sub: "Weinig vlees, huismerken" },
+  { label: "Gemiddeld", waarde: 420, sub: "Gevarieerd, supermarkt" },
+  { label: "Bewust & bio", waarde: 580, sub: "Veel vers, biologisch" },
+  { label: "Royaal", waarde: 750, sub: "Premium, weinig op prijs letten" },
+  { label: "Zelf invullen", waarde: null },
+];
 
 // ─── Herbruikbare UI-componenten ──────────────────────────────────────────────
 
@@ -71,35 +98,60 @@ function ScenTip({ active, payload, label }) {
   );
 }
 
+function PresetKnoppen({ presets, value, onChange, label }) {
+  const actief = presets.find(p => p.waarde === value && p.waarde !== null);
+  return (
+    <div>
+      {label && <Lbl>{label}</Lbl>}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        {presets.map((p, i) => {
+          const isActief = p.waarde !== null ? p.waarde === value : !presets.find(x => x.waarde !== null && x.waarde === value);
+          return (
+            <button key={i} onClick={() => p.waarde !== null && onChange(p.waarde)} style={{ padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${isActief ? C.gold : C.border}`, background: isActief ? C.goldPale : C.surface, color: isActief ? C.gold : C.muted, fontSize: 12, fontWeight: isActief ? 600 : 400 }}>
+              {p.label}
+              {p.sub && <div style={{ fontSize: 10, color: isActief ? C.gold : C.dim }}>{p.sub}</div>}
+            </button>
+          );
+        })}
+      </div>
+      {(!actief || value === 0) && <NumInp value={value} onChange={onChange} prefix="€" suffix="/mnd" placeholder="eigen bedrag" />}
+    </div>
+  );
+}
+
 // ─── HOOFDCOMPONENT ──────────────────────────────────────────────────────────
 export default function VrijheidsWizard() {
-  const [stap, setStap]           = useState(0);
-  const [openGroep, setOpenGroep] = useState("Wonen");
-  const [spaarrente, setSpaarrente] = useState(SPAARRENTE_FALLBACK);
+  const [stap, setStap]             = useState(0);
+  const [openGroep, setOpenGroep]   = useState("Wonen");
+  const [spaarrente]                = useState(SPAARRENTE_FALLBACK);
+  const accountRefs                 = useRef({});
 
   // ── Profiel ──
   const [profiel, setProfiel] = useState({
     naam: "", geboortejaar: "", stopLeeftijd: 55, inkomen: "",
     partner: false, werkType: "loondienst", kinderen: [],
-    partnerVerdeling: 50, // 50 = 50/50, 70 = jij 70%, partner 30%
+    partnerVerdeling: 50,
+    partnerPerCategorie: {}, // { groepId: pct }
   });
 
   // ── Lifestyle ──
   const defLS = Object.fromEntries(ALLE_ITEMS.map(i => [i.key, 0]));
   const [ls, setLs] = useState({ ...defLS, woningWaarde: 0, bouwjaar: 0, huurder: false, onderhoudOverride: null });
-  const [verzek, setVerzek]     = useState([]);
+  const [verzek, setVerzek]         = useState([]);
   const [verzekOpen, setVerzekOpen] = useState(false);
-  const [leningen, setLeningen] = useState([]);
+  const [leningen, setLeningen]     = useState([]);
+  const [extraAflossing, setExtraAflossing] = useState({}); // { leningId: bedrag }
 
-  // ── Vermogen: accounts-model ──
-  // Elke rekening: { id, label, catId, waarde, inlegMnd, rendement }
-  const [accounts, setAccounts] = useState([]);
+  // ── Vermogen ──
+  const [accounts, setAccounts]     = useState([]);
+  const [schulden, setSchulden]     = useState([]); // { id, label, bedrag, rente, maandlast }
 
   // ── Pensioen ──
   const [pens, setPens] = useState({
     heeftWerkgever: false, werkgever: 0, werkgeverLeeftijd: 68,
     heeftEigen: false, eigen: 0, eigenLeeftijd: 68,
     jaarruimteInleg: 0, factorA: 0,
+    eigenOverride: false, // gebruiker heeft eigen waarde ingevuld, niet auto-berekend
   });
 
   // ── Afgeleide waarden ──────────────────────────────────────────────────────
@@ -113,8 +165,11 @@ export default function VrijheidsWizard() {
   const jarenGat     = aowGat ? aow.leeftijd - stopLft : 0;
   const aowMaand     = profiel.partner ? AOW_SAMENWONEND : AOW_ALLEENSTAAND;
 
-  // Partner: jouw aandeel in de lasten
-  const partnerAandeel = profiel.partner ? (profiel.partnerVerdeling / 100) : 1.0;
+  const partnerAandeel   = profiel.partner ? (profiel.partnerVerdeling / 100) : 1.0;
+  const getGroepAandeel  = (groepId) => {
+    if (!profiel.partner) return 1.0;
+    return (profiel.partnerPerCategorie[groepId] ?? profiel.partnerVerdeling) / 100;
+  };
 
   // Kinderen
   const kinderenWegOpStop = profiel.kinderen.filter(k => (gbjaar + stopLft - k.geboortejaar) >= UITWONEN_LEEFTIJD);
@@ -125,59 +180,105 @@ export default function VrijheidsWizard() {
   const autoOnderhoud  = (ls.woningWaarde > 0 && ls.bouwjaar > 0 && !ls.huurder) ? berekenOnderhoud(ls.woningWaarde, ls.bouwjaar) : 0;
   const onderhoudMaand = ls.onderhoudOverride !== null ? ls.onderhoudOverride : autoOnderhoud;
 
-  // Hypotheek
-  const leningCalc      = leningen.map(d => ({ ...d, ...berekenHypoDeel(d) }));
+  // Hypotheek met extra aflossingen
+  const leningMetAfl = leningen.map(d => {
+    const ea = extraAflossing[d.id] || 0;
+    return { ...d, hoofdsom: Math.max(0, d.hoofdsom - ea) };
+  });
+  const leningCalc      = leningMetAfl.map(d => ({ ...d, ...berekenHypoDeel(d) }));
+  const leningCalcOrig  = leningen.map(d => ({ ...d, ...berekenHypoDeel(d) }));
   const hypoMaandNu     = leningCalc.reduce((s, d) => s + d.maand, 0);
+  const hypoMaandNuOrig = leningCalcOrig.reduce((s, d) => s + d.maand, 0);
   const hypoRestschuld  = leningCalc.reduce((s, d) => s + d.restschuld, 0);
   const hypoOpStop      = leningCalc.reduce((s, d) => d.eindjaar > stopJaar ? s + d.maand : s, 0);
+  const hypoOpStopOrig  = leningCalcOrig.reduce((s, d) => d.eindjaar > stopJaar ? s + d.maand : s, 0);
   const hypotheekVrij   = !ls.huurder && leningen.length > 0 && hypoOpStop === 0;
+  const totaalExtraAfl  = Object.values(extraAflossing).reduce((s, v) => s + (v || 0), 0);
+
+  // Jaren hypotheek na vrije leeftijd
+  const maxEindjaar     = leningCalc.reduce((m, d) => Math.max(m, d.eindjaar || 0), 0);
+  const jarenHypoNaStop = Math.max(0, maxEindjaar - stopJaar);
 
   // Aflossingsschema voor grafiek
   const aflossingsData = (() => {
     if (!leningen.length) return [];
-    const jaren = {};
-    leningCalc.forEach(l => (l.schema || []).forEach(s => { jaren[s.jaar] = (jaren[s.jaar] || 0) + s.restschuld; }));
-    return Object.entries(jaren).map(([j, r]) => ({ jaar: +j, leeftijd: +j - 2025 + leeftijd, restschuld: r })).sort((a, b) => a.jaar - b.jaar);
+    const jarenOrig = {};
+    const jarenMet  = {};
+    leningCalcOrig.forEach(l => (l.schema || []).forEach(s => { jarenOrig[s.jaar] = (jarenOrig[s.jaar] || 0) + s.restschuld; }));
+    leningCalc.forEach(l => (l.schema || []).forEach(s => { jarenMet[s.jaar] = (jarenMet[s.jaar] || 0) + s.restschuld; }));
+    const allJaren = [...new Set([...Object.keys(jarenOrig), ...Object.keys(jarenMet)])].map(Number).sort((a, b) => a - b);
+    return allJaren.map(j => ({ jaar: j, leeftijd: j - 2025 + leeftijd, label: `${j - 2025 + leeftijd}j`, restschuld: jarenOrig[j] || 0, metAflossing: jarenMet[j] || 0 }));
   })();
 
-  // Verzekeringen
+  // Verzekeringen (NIET meetellen in mobiliteit — al apart)
   const verzekMaand = verzek.reduce((s, v) => s + (v.bedrag || 0), 0);
 
-  // Levensstijl totaal (jouw aandeel)
-  const effLs   = { ...ls, onderhoud: onderhoudMaand, huurHypo: !ls.huurder && hypoMaandNu > 0 ? hypoMaandNu : ls.huurHypo };
+  // Schulden
+  const totaalSchulden = schulden.reduce((s, d) => s + (d.bedrag || 0), 0);
+  const maandlastSchulden = schulden.reduce((s, d) => s + (d.maandlast || 0), 0);
+
+  // Levensstijl totaal
   const maandBruto = ALLE_ITEMS.reduce((s, item) => {
     if (item.key === "onderhoud") return s + onderhoudMaand;
-    const v = effLs[item.key] || 0;
+    if (item.key === "verzekeringen") return s; // afzonderlijk via verzekMaand
+    const v = ls[item.key] || 0;
     return s + (item.div ? v / item.div : v);
   }, 0) + verzekMaand;
-  const maandNu = maandBruto * partnerAandeel;
 
-  let maandOpStop = maandNu;
-  if (!ls.huurder && hypoMaandNu > 0) maandOpStop = maandOpStop - (hypoMaandNu * partnerAandeel) + (hypoOpStop * partnerAandeel);
+  // Per groep aandeel toepassen
+  const maandNu = CATS.reduce((s, groep) => {
+    const aandeel = getGroepAandeel(groep.groep);
+    const groepTot = groep.items.reduce((gs, item) => {
+      if (item.key === "onderhoud") return gs + onderhoudMaand;
+      if (item.key === "verzekeringen") return gs;
+      const v = ls[item.key] || 0;
+      return gs + (item.div ? v / item.div : v);
+    }, 0);
+    return s + groepTot * aandeel;
+  }, 0) + verzekMaand * partnerAandeel + maandlastSchulden;
+
+  let maandOpStop = CATS.reduce((s, groep) => {
+    const aandeel = getGroepAandeel(groep.groep);
+    const groepTot = groep.items.reduce((gs, item) => {
+      if (item.key === "onderhoud") return gs + onderhoudMaand;
+      if (item.key === "verzekeringen") return gs;
+      const v = ls[item.key] || 0;
+      return gs + (item.div ? v / item.div : v);
+    }, 0);
+    return s + groepTot * aandeel;
+  }, 0) + verzekMaand * partnerAandeel;
+
+  if (!ls.huurder && hypoMaandNuOrig > 0) {
+    maandOpStop = maandOpStop - (hypoMaandNuOrig * partnerAandeel) + (hypoOpStop * partnerAandeel);
+  }
   maandOpStop = Math.max(0, maandOpStop - kinderKostenWeg * partnerAandeel);
 
   const jaarOpStop  = maandOpStop * 12 * Math.pow(1 + INFLATIE, jarenTotStop);
   const cashNodig   = maandNu * 6;
 
-  // Jaarruimte
   const jaarruimteCalc = berekenJaarruimte(parseFloat(profiel.inkomen) || 0, profiel.werkType, pens.factorA);
 
-  // Pensioen & AOW beschikbaar op stopleeftijd
-  const aowBij       = aowGat ? 0 : aowMaand;
-  const pensBij      = (pens.heeftWerkgever && !aowGat) ? pens.werkgever : 0;
-  const eigenPensBij = (pens.heeftEigen && !aowGat) ? pens.eigen : 0;
+  // Auto-bereken eigenPensioen uit lijfrente-accounts
+  const lijfrenteAccounts = accounts.filter(a => a.catId === "lijfrente");
+  const lijfrenteTotaalOpStop = lijfrenteAccounts.reduce((s, a) => {
+    const r = a.rendement || 0.06;
+    return s + (a.waarde || 0) * Math.pow(1 + r, jarenTotStop) + (a.inlegMnd || 0) * 12 * ((Math.pow(1 + r, jarenTotStop) - 1) / r || jarenTotStop);
+  }, 0);
+  // Omzetten naar maandinkomen (20 jaar uitkering)
+  const eigenPensAutoMaand = Math.round(lijfrenteTotaalOpStop / (20 * 12));
+
+  const aowBij        = aowGat ? 0 : aowMaand;
+  const pensBij       = (pens.heeftWerkgever && stopLft >= pens.werkgeverLeeftijd) ? pens.werkgever : 0;
+  const eigenPensBij  = (pens.heeftEigen && stopLft >= pens.eigenLeeftijd) ? (pens.eigenOverride ? pens.eigen : eigenPensAutoMaand) : 0;
   const totaalPassief = aowBij + pensBij + eigenPensBij;
 
-  // Benodigde pot
-  const benodigdPot = Math.max(0, jaarOpStop - totaalPassief * 12) / FIRE_PCT;
+  const benodigdPot   = Math.max(0, jaarOpStop - totaalPassief * 12) / FIRE_PCT;
 
-  // Accounts totaal
-  const totaalVerm   = accounts.reduce((s, a) => s + (a.waarde || 0), 0);
-  const totaalInleg  = accounts.reduce((s, a) => s + (a.inlegMnd || 0), 0);
+  const totaalVerm    = accounts.reduce((s, a) => s + (a.waarde || 0), 0) - totaalSchulden;
+  const totaalInleg   = accounts.reduce((s, a) => s + (a.inlegMnd || 0), 0);
 
-  // Prognose
-  const scenarios    = accounts.length > 0
-    ? bouwAccountPrognose(leeftijd, stopLft, accounts.map(a => ({ id: a.id, waarde: a.waarde || 0, inlegMnd: a.inlegMnd || 0, rendement: a.rendement || 0.05 })), benodigdPot)
+  const scenarios     = accounts.length > 0
+    ? bouwAccountPrognose(leeftijd, stopLft, accounts.map(a => ({ id: a.id, waarde: Math.max(0, a.waarde || 0), inlegMnd: a.inlegMnd || 0, rendement: a.rendement || 0.05 })), benodigdPot)
     : { pess: [], midden: [], opt: [] };
 
   const grafData = (scenarios.midden || []).map((d, i) => ({
@@ -193,9 +294,13 @@ export default function VrijheidsWizard() {
   const doelBereikt  = verschil >= 0;
   const pessOk       = vermOpStopP >= benodigdPot;
 
-  // Maandelijks inkomen op stopleeftijd (uit pot + passief)
-  const inkomenUitPot    = vermOpStopM * FIRE_PCT / 12;
+  const inkomenUitPot      = vermOpStopM * FIRE_PCT / 12;
   const totaalMaandInkomen = inkomenUitPot + totaalPassief;
+
+  // Extra inleg berekenen voor tekort
+  const extraNodig = !doelBereikt && jarenTotStop > 0
+    ? Math.ceil((benodigdPot - totaalVerm * Math.pow(1.06, jarenTotStop)) / ((Math.pow(1.06, jarenTotStop) - 1) / (0.06 / 12)) / 12)
+    : 0;
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   const setL  = (k, v) => setLs(p => ({ ...p, [k]: v }));
@@ -220,12 +325,31 @@ export default function VrijheidsWizard() {
   const updVerzekBedrag = (id, b) => setVerzek(p => p.map(v => v.id === id ? { ...v, bedrag: b } : v));
 
   function addAccount(catId) {
-    const cat = ACCOUNT_CATS.find(c => c.id === catId);
+    const cat  = ACCOUNT_CATS.find(c => c.id === catId);
     const rend = catId === "sparen" ? spaarrente : (cat?.rendMidden || 0.05);
-    setAccounts(p => [...p, { id: Date.now(), label: cat?.label || "Rekening", catId, waarde: 0, inlegMnd: 0, rendement: rend }]);
+    const id   = Date.now();
+    setAccounts(p => [...p, { id, label: cat?.label || "Rekening", catId, waarde: 0, inlegMnd: 0, rendement: rend }]);
+    setTimeout(() => {
+      accountRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
   }
-  const delAccount    = (id) => setAccounts(p => p.filter(a => a.id !== id));
-  const updAccount    = (id, k, v) => setAccounts(p => p.map(a => a.id === id ? { ...a, [k]: v } : a));
+  const delAccount = (id) => setAccounts(p => p.filter(a => a.id !== id));
+  const updAccount = (id, k, v) => setAccounts(p => p.map(a => a.id === id ? { ...a, [k]: v } : a));
+
+  function addSchuld() {
+    const id = Date.now();
+    setSchulden(p => [...p, { id, label: "Schuld", bedrag: 0, rente: 0, maandlast: 0 }]);
+    setTimeout(() => { accountRefs.current["schuld_" + id]?.scrollIntoView({ behavior: "smooth", block: "center" }); }, 80);
+  }
+  const delSchuld = (id) => setSchulden(p => p.filter(s => s.id !== id));
+  const updSchuld = (id, k, v) => setSchulden(p => p.map(s => s.id === id ? { ...s, [k]: v } : s));
+
+  // Noodfonds peil
+  const spaartotaal   = accounts.filter(a => a.catId === "sparen" || a.catId === "cash").reduce((s, a) => s + (a.waarde || 0), 0);
+  const noodfondsPct  = cashNodig > 0 ? Math.min(100, Math.round((spaartotaal / cashNodig) * 100)) : 0;
+
+  // Hypotheekvrij-visualisatie
+  const hypotheekKleur = hypotheekVrij ? C.greenLight : (jarenHypoNaStop > 5 ? C.red : C.gold);
 
   // ── RENDER ─────────────────────────────────────────────────────────────────
   return (
@@ -245,34 +369,29 @@ export default function VrijheidsWizard() {
         </Card>
       </div>
 
-      <div className="fu">
+      <div>
 
         {/* ════════════════════════════════════════
             STAP 1 — PROFIEL
         ════════════════════════════════════════ */}
         {stap === 0 && (
           <Card accent={C.gold}>
-            <Kop size={26} sub="Laten we beginnen met de basis. Alle berekeningen blijven privé op jouw apparaat — we slaan niets op.">Vertel ons iets over jezelf</Kop>
+            <Kop size={26} sub="Laten we beginnen met de basis. Alle berekeningen blijven privé op jouw apparaat.">Vertel ons iets over jezelf</Kop>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginTop: 24 }}>
-
               <div><Lbl>Naam (optioneel)</Lbl><input type="text" value={profiel.naam} onChange={e => setP("naam", e.target.value)} placeholder="Voor de persoonlijke touch" style={{ width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 14, color: C.text }} /></div>
-
               <div>
                 <Lbl info="Je geboortejaar — we berekenen hieruit je leeftijd en wanneer je AOW krijgt.">Geboortejaar</Lbl>
                 <NumInp value={profiel.geboortejaar} onChange={v => setP("geboortejaar", v)} placeholder="bijv. 1985" suffix={profiel.geboortejaar ? `(${leeftijd} jaar)` : ""} />
               </div>
-
               <div style={{ gridColumn: "1 / -1" }}>
                 <Slider label="Wanneer wil je financieel vrij zijn?" value={stopLft} onChange={v => setP("stopLeeftijd", v)} min={leeftijd + 1} max={75} fmt={v => `${v} jaar (over ${v - leeftijd} jaar)`} />
               </div>
-
               <div>
-                <Lbl info="Bruto jaarsalaris inclusief vakantiegeld. Als je zelfstandige bent: gemiddelde jaarwinst.">Bruto jaarinkomen</Lbl>
+                <Lbl info="Bruto jaarsalaris inclusief vakantiegeld. Als ZZP: gemiddelde jaarwinst.">Bruto jaarinkomen</Lbl>
                 <NumInp value={profiel.inkomen} onChange={v => setP("inkomen", v)} prefix="€" placeholder="bijv. 60.000" />
               </div>
-
               <div>
-                <Lbl info="Dit bepaalt hoeveel ruimte je hebt om belastingvrij pensioen op te bouwen.">Werksituatie</Lbl>
+                <Lbl info="Bepaalt je fiscale ruimte om belastingvrij pensioen op te bouwen.">Werksituatie</Lbl>
                 <div style={{ display: "flex", gap: 8 }}>
                   {[["loondienst","In loondienst"],["zzp","ZZP / zelfstandige"]].map(([val,lbl]) => (
                     <button key={val} onClick={() => setP("werkType", val)} style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: `2px solid ${profiel.werkType === val ? C.gold : C.border}`, background: profiel.werkType === val ? C.goldPale : C.surface, color: profiel.werkType === val ? C.gold : C.muted, fontWeight: profiel.werkType === val ? 600 : 400, fontSize: 13 }}>{lbl}</button>
@@ -280,32 +399,27 @@ export default function VrijheidsWizard() {
                 </div>
               </div>
 
-              {/* Partner */}
               <div style={{ gridColumn: "1 / -1" }}>
                 <CheckBox checked={profiel.partner} onChange={v => setP("partner", v)}
                   label="Ik plan samen met een partner"
-                  sub={profiel.partner ? `Je AOW: ${eur(AOW_SAMENWONEND)}/mnd (samenwonend tarief)` : `Je AOW: ${eur(AOW_ALLEENSTAAND)}/mnd (alleenstaand)`} />
+                  sub={profiel.partner ? `Jouw AOW: ${eur(AOW_SAMENWONEND)}/mnd · Partner: ${eur(AOW_SAMENWONEND)}/mnd` : `Jouw AOW: ${eur(AOW_ALLEENSTAAND)}/mnd (alleenstaand)`} />
                 {profiel.partner && (
                   <div style={{ marginTop: 12, background: C.goldPale, borderRadius: 12, padding: "16px 18px", border: `1px solid ${C.gold}30` }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>💑 Hoe verdelen jullie de vaste lasten?</div>
-                    <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 14 }}>
-                      Vul hier in welk percentage <em>jij</em> betaalt. Dit past alle uitgaven aan voor jouw berekening. Later kun je per categorie een andere verdeling instellen als dat beter past.
-                    </p>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 6 }}>💑 Standaard kostenverdeling</div>
+                    <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 12 }}>Vul hier jouw standaard aandeel in. Per categorie (wonen, boodschappen, etc.) kun je dit later aanpassen als jullie het anders verdelen.</p>
                     <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
                       <span style={{ fontSize: 13, color: C.muted, whiteSpace: "nowrap" }}>Jij betaalt:</span>
                       <input type="range" min={10} max={100} step={5} value={profiel.partnerVerdeling} onChange={e => setP("partnerVerdeling", +e.target.value)} style={{ flex: 1 }} />
                       <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, color: C.gold, fontWeight: 600, minWidth: 50 }}>{profiel.partnerVerdeling}%</span>
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginTop: 6 }}>
-                      <span>Jij: {profiel.partnerVerdeling}%</span>
-                      <span>Partner: {100 - profiel.partnerVerdeling}%</span>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginTop: 4 }}>
+                      <span>Jij: {profiel.partnerVerdeling}%</span><span>Partner: {100 - profiel.partnerVerdeling}%</span>
                     </div>
-                    <InfoBox style={{ marginTop: 10 }}>Alle bedragen in de berekening zijn <strong>jouw aandeel</strong>. Je partner maakt idealiter een eigen plan.</InfoBox>
+                    <InfoBox style={{ marginTop: 10 }}>Alle bedragen zijn jouw aandeel. Je partner maakt idealiter een eigen plan.</InfoBox>
                   </div>
                 )}
               </div>
 
-              {/* Kinderen */}
               <div style={{ gridColumn: "1 / -1" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <Lbl info="Kinderen die voor je vrije leeftijd het huis uit gaan zorgen voor lagere kosten.">Kinderen</Lbl>
@@ -324,37 +438,28 @@ export default function VrijheidsWizard() {
                           <input type="number" value={k.geboortejaar} onChange={e => updKind(k.id, parseInt(e.target.value) || 2015)} style={{ width: 80, background: C.card, border: `1px solid ${C.border}`, borderRadius: 7, padding: "4px 8px", fontSize: 13, fontFamily: "'DM Mono',monospace", color: C.text }} />
                           <span style={{ fontSize: 12, color: C.muted }}>({2025 - k.geboortejaar} jaar nu)</span>
                         </div>
-                        <div style={{ fontSize: 11, marginTop: 4, color: uitHuis ? C.greenLight : C.gold, fontWeight: 500 }}>
-                          {uitHuis ? `✓ Op vrije leeftijd al ${lftStop} jaar — kosten vallen weg` : `Op vrije leeftijd ${lftStop} jaar — nog thuis`}
-                        </div>
+                        <div style={{ fontSize: 11, marginTop: 4, color: uitHuis ? C.greenLight : C.gold, fontWeight: 500 }}>{uitHuis ? `✓ Op vrije leeftijd al ${lftStop} jaar — kosten vallen weg` : `Op vrije leeftijd ${lftStop} jaar — nog thuis`}</div>
                       </div>
                       <button onClick={() => delKind(k.id)} style={{ background: "transparent", border: "none", color: C.dim, fontSize: 18 }}>×</button>
                     </div>
                   );
                 })}
-                {kinderenWegOpStop.length > 0 && <InfoBox type="goed">{kinderenWegOpStop.length} {kinderenWegOpStop.length === 1 ? "kind" : "kinderen"} zijn op je vrije leeftijd al het huis uit — bespaart <strong>{eur(kinderKostenWeg * partnerAandeel)}/mnd</strong>.</InfoBox>}
               </div>
             </div>
 
-            {/* AOW indicator */}
             <div style={{ marginTop: 20, background: aow.zeker ? C.greenPale : C.goldPale, borderRadius: 12, padding: "14px 18px", border: `1px solid ${(aow.zeker ? C.greenLight : C.gold)}40` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 4 }}>AOW-leeftijd: <span style={{ fontFamily: "'DM Mono',monospace", color: aow.zeker ? C.greenLight : C.gold }}>{aow.leeftijd} jaar</span></div>
-                  <div style={{ fontSize: 12, color: C.muted }}>{aow.bron}</div>
-                  {aow.disclaimer && <div style={{ fontSize: 11, color: C.textSub, marginTop: 6, lineHeight: 1.6 }}>⚠️ {aow.disclaimer}</div>}
-                  {aowGat && <div style={{ marginTop: 8, fontSize: 13, fontWeight: 600, color: C.red }}>Je stopt {jarenGat} jaar vóór je AOW — je moet dit zelf overbruggen</div>}
+                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>AOW-leeftijd: <span style={{ fontFamily: "'DM Mono',monospace", color: aow.zeker ? C.greenLight : C.gold }}>{aow.leeftijd} jaar</span></div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{aow.bron}</div>
+                  {aow.disclaimer && <div style={{ fontSize: 11, color: C.textSub, marginTop: 4, lineHeight: 1.6 }}>⚠️ {aow.disclaimer}</div>}
+                  {aowGat && <div style={{ marginTop: 6, fontSize: 13, fontWeight: 600, color: C.red }}>Je stopt {jarenGat} jaar vóór je AOW — dit moet je zelf overbruggen</div>}
                 </div>
                 <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
                   <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, color: aow.zeker ? C.greenLight : C.gold, fontWeight: 600 }}>{eur(aowMaand)}/mnd</div>
                   <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{profiel.partner ? "samenwonend" : "alleenstaand"}</div>
-                  <span style={{ fontSize: 10, background: aow.zeker ? `${C.greenLight}20` : `${C.gold}20`, color: aow.zeker ? C.green : C.gold, padding: "2px 10px", borderRadius: 10, fontWeight: 600, textTransform: "uppercase", display: "inline-block", marginTop: 4 }}>{aow.zeker ? "Officieel ✓" : "Schatting"}</span>
                 </div>
               </div>
-            </div>
-
-            <div style={{ marginTop: 14 }}>
-              <InfoBox>Je wil financieel vrij zijn op <strong>{stopLft} jaar</strong> — over <strong>{jarenTotStop} jaar</strong>. {aowGat ? `Je ontvangt pas AOW op ${aow.leeftijd} jaar — je moet ${jarenGat} jaar zelf overbruggen.` : `Op die leeftijd ontvang je al ${eur(aowMaand)}/mnd AOW van de overheid.`}</InfoBox>
             </div>
 
             <button onClick={() => setStap(1)} style={{ marginTop: 20, background: C.gold, border: "none", borderRadius: 12, padding: "13px 28px", color: "#fff", fontWeight: 600, fontSize: 15 }}>Volgende → Levensstijl</button>
@@ -368,23 +473,20 @@ export default function VrijheidsWizard() {
           <div>
             <Card accent={C.gold} style={{ marginBottom: 14 }}>
               <Kop size={26} sub="Hoe wil jij leven als je financieel vrij bent? Wees eerlijk — dit is jouw droomscenario.">Gewenste levensstijl</Kop>
-              {profiel.partner && (
-                <InfoBox style={{ marginTop: 14 }}>Je betaalt <strong>{profiel.partnerVerdeling}%</strong> van de gedeelde lasten. Het totaal hieronder is jouw aandeel.</InfoBox>
-              )}
 
               {/* Woninggegevens */}
               <div style={{ marginTop: 20, background: C.surface, borderRadius: 12, padding: "16px 18px", border: `1px solid ${C.border}` }}>
-                <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 16, fontWeight: 600, marginBottom: 14, color: C.text }}>🏠 Woninggegevens</div>
+                <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 16, fontWeight: 600, marginBottom: 14, color: C.text }}>🏠 Woning</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 12, alignItems: "end" }}>
                   <div><Lbl>Woningwaarde (WOZ)</Lbl><NumInp value={ls.woningWaarde} onChange={v => setL("woningWaarde", v)} prefix="€" placeholder="bijv. 400.000" /></div>
-                  <div><Lbl info="Bouwjaar bepaalt hoe hoog het onderhoud is. Oudere woningen vragen meer.">Bouwjaar</Lbl><NumInp value={ls.bouwjaar} onChange={v => setL("bouwjaar", v)} placeholder="bijv. 1995" /></div>
+                  <div><Lbl info="Bouwjaar bepaalt hoe hoog het onderhoud is.">Bouwjaar</Lbl><NumInp value={ls.bouwjaar} onChange={v => setL("bouwjaar", v)} placeholder="bijv. 1995" /></div>
                   <div>
-                    <Lbl info="Automatisch berekend op basis van woningwaarde en bouwjaar. Je kunt dit zelf aanpassen als het niet klopt.">Onderhoud/mnd</Lbl>
+                    <Lbl info="Automatisch berekend op basis van woningwaarde en bouwjaar.">Onderhoud/mnd</Lbl>
                     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                       <NumInp value={ls.onderhoudOverride !== null ? ls.onderhoudOverride : autoOnderhoud} onChange={v => setL("onderhoudOverride", v)} prefix="€" placeholder="0" />
                       {ls.onderhoudOverride !== null && <button onClick={() => setL("onderhoudOverride", null)} style={{ background: C.goldPale, border: `1px solid ${C.gold}40`, borderRadius: 8, padding: "8px 10px", fontSize: 11, color: C.gold, whiteSpace: "nowrap" }}>↺ auto</button>}
                     </div>
-                    {ls.onderhoudOverride === null && autoOnderhoud > 0 && <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>Berekend: {eur(autoOnderhoud)}/mnd — klik om te wijzigen</div>}
+                    {ls.onderhoudOverride === null && autoOnderhoud > 0 && <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>Auto: {eur(autoOnderhoud)}/mnd</div>}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <input type="checkbox" id="huurder" checked={ls.huurder} onChange={e => setL("huurder", e.target.checked)} />
@@ -405,8 +507,11 @@ export default function VrijheidsWizard() {
                   </div>
                   {leningen.length === 0 && <div style={{ padding: "16px 18px", color: C.dim, fontSize: 13, fontStyle: "italic" }}>Geen hypotheek? Dan hoef je hier niets in te vullen.</div>}
                   {leningen.map((deel, idx) => {
-                    const c = leningCalc.find(b => b.id === deel.id) || {};
+                    const c         = leningCalc.find(b => b.id === deel.id) || {};
+                    const cOrig     = leningCalcOrig.find(b => b.id === deel.id) || {};
+                    const ea        = extraAflossing[deel.id] || 0;
                     const aflVoorStop = c.eindjaar && c.eindjaar <= stopJaar;
+                    const restNaStop  = c.eindjaar ? Math.max(0, c.eindjaar - stopJaar) : 0;
                     return (
                       <div key={deel.id} style={{ padding: "16px 18px", borderBottom: idx < leningen.length - 1 ? `1px solid ${C.border}` : "none" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -419,39 +524,83 @@ export default function VrijheidsWizard() {
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10 }}>
                           <div><Lbl>Hoofdsom</Lbl><NumInp value={deel.hoofdsom} onChange={v => updLening(deel.id, "hoofdsom", v)} prefix="€" placeholder="0" /></div>
                           <div><Lbl>Rente</Lbl><NumInp value={deel.rente} onChange={v => updLening(deel.id, "rente", v)} suffix="%" placeholder="0" /></div>
-                          <div><Lbl info="Totale looptijd in jaren — resterende looptijd wordt automatisch berekend.">Looptijd</Lbl><NumInp value={deel.looptijdJaar} onChange={v => updLening(deel.id, "looptijdJaar", v)} suffix="jaar" placeholder="30" /></div>
+                          <div><Lbl info="Totale looptijd — resterende looptijd wordt automatisch berekend.">Looptijd</Lbl><NumInp value={deel.looptijdJaar} onChange={v => updLening(deel.id, "looptijdJaar", v)} suffix="jaar" placeholder="30" /></div>
                           <div><Lbl info="Jaar dat de hypotheek is afgesloten.">Startjaar</Lbl><NumInp value={deel.startjaar} onChange={v => updLening(deel.id, "startjaar", v)} placeholder="2020" /></div>
                           <div>
-                            <Lbl info="Annuïteit: vaste maandlast. Lineair: dalende maandlast. Aflossingsvrij: alleen rente betalen.">Soort</Lbl>
+                            <Lbl info="Annuïteit: vaste maandlast. Lineair: dalende maandlast. Aflossingsvrij: alleen rente.">Soort</Lbl>
                             <select value={deel.soort} onChange={e => updLening(deel.id, "soort", e.target.value)} style={{ width: "100%", background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", fontSize: 13, color: C.text }}>
-                              <option value="annuiteit">Annuïteit</option>
-                              <option value="lineair">Lineair</option>
-                              <option value="aflossingsvrij">Aflossingsvrij</option>
+                              <option value="annuiteit">Annuïteit</option><option value="lineair">Lineair</option><option value="aflossingsvrij">Aflossingsvrij</option>
                             </select>
                           </div>
                         </div>
-                        <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-                          {[
-                            { lbl: "Maandlast nu", val: `${eur(c.maand||0)}/mnd`, clr: C.gold },
-                            { lbl: "Restschuld", val: eur(c.restschuld||0), clr: C.red },
-                            { lbl: "Resterende looptijd", val: `${c.restLooptijdJaar||0} jaar`, clr: C.muted },
-                            { lbl: `Op ${stopLft} jaar`, val: aflVoorStop ? "Afgelost ✓" : `${eur(c.maand||0)}/mnd`, clr: aflVoorStop ? C.greenLight : C.text },
-                          ].map((k,i) => (
-                            <div key={i} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 14px" }}>
-                              <div style={{ fontSize: 10, color: C.dim, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 3 }}>{k.lbl}</div>
-                              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 13, color: k.clr, fontWeight: 600 }}>{k.val}</div>
+
+                        {/* Hypotheekinzicht */}
+                        <div style={{ marginTop: 12, background: aflVoorStop ? C.greenPale : C.goldPale, borderRadius: 10, padding: "12px 16px", border: `1px solid ${(aflVoorStop ? C.greenLight : C.gold)}30` }}>
+                          {aflVoorStop ? (
+                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                              <span style={{ fontSize: 28 }}>🎉</span>
+                              <div>
+                                <div style={{ fontWeight: 700, color: C.greenLight, fontSize: 14 }}>Hypotheekvrij op je vrije leeftijd!</div>
+                                <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Afgelost in {c.eindjaar} — dat scheelt {eur((cOrig.maand || 0) * partnerAandeel)}/mnd in je budget.</div>
+                              </div>
                             </div>
-                          ))}
+                          ) : (
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: C.gold }}>
+                                Op vrije leeftijd ({stopLft} jaar): nog {restNaStop} jaar hypotheek te betalen
+                              </div>
+                              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+                                Maandlast op dat moment: {eur(c.maand || 0)}/mnd · Nog {eur(c.restschuld || 0)} restschuld
+                              </div>
+                              {/* Voortgangsbalk jaren resterend */}
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                                <div style={{ flex: 1, height: 6, background: C.surface, borderRadius: 3, overflow: "hidden" }}>
+                                  <div style={{ width: `${Math.max(5, Math.min(100, 100 - (restNaStop / deel.looptijdJaar) * 100))}%`, height: "100%", background: C.gold, borderRadius: 3 }} />
+                                </div>
+                                <span style={{ fontSize: 11, color: C.muted, whiteSpace: "nowrap" }}>{restNaStop} jaar resterend na vrije leeftijd</span>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        {deel.soort === "aflossingsvrij" && <div style={{ marginTop: 10, fontSize: 12, color: C.gold, background: `${C.gold}10`, border: `1px solid ${C.gold}30`, borderRadius: 8, padding: "8px 12px" }}>⚠ Aflossingsvrij: op einddatum ({c.eindjaar||"?"}) is {eur(deel.hoofdsom)} ineens opeisbaar.</div>}
+
+                        {/* Extra aflossing */}
+                        <div style={{ marginTop: 10, background: C.surface, borderRadius: 10, padding: "12px 14px", border: `1px solid ${C.border}` }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 6 }}>💡 Wat als je een deel in één keer aflost?</div>
+                          <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>Plan je een extra aflossing? Voer het bedrag in en zie direct het effect op je maandlast en restschuld.</p>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                            <div><Lbl>Extra aflossing</Lbl><NumInp value={ea} onChange={v => setExtraAflossing(p => ({ ...p, [deel.id]: v }))} prefix="€" placeholder="0" /></div>
+                            <div style={{ background: C.card, borderRadius: 8, padding: "8px 12px" }}>
+                              <div style={{ fontSize: 10, color: C.dim, marginBottom: 3 }}>Maandlast na aflossing</div>
+                              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 14, color: ea > 0 ? C.greenLight : C.muted, fontWeight: 600 }}>{eur(c.maand || 0)}/mnd</div>
+                              {ea > 0 && <div style={{ fontSize: 10, color: C.greenLight, marginTop: 2 }}>Was {eur(cOrig.maand || 0)}/mnd</div>}
+                            </div>
+                            <div style={{ background: C.card, borderRadius: 8, padding: "8px 12px" }}>
+                              <div style={{ fontSize: 10, color: C.dim, marginBottom: 3 }}>Restschuld na aflossing</div>
+                              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 14, color: ea > 0 ? C.greenLight : C.muted, fontWeight: 600 }}>{eur(c.restschuld || 0)}</div>
+                              {ea > 0 && <div style={{ fontSize: 10, color: C.greenLight, marginTop: 2 }}>Was {eur(cOrig.restschuld || 0)}</div>}
+                            </div>
+                          </div>
+                          {ea > 0 && c.eindjaar <= stopJaar && cOrig.eindjaar > stopJaar && (
+                            <div style={{ marginTop: 8, background: C.greenPale, borderRadius: 8, padding: "8px 12px", display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 18 }}>🎉</span>
+                              <div style={{ fontSize: 13, color: C.greenLight, fontWeight: 600 }}>Met deze aflossing ben je hypotheekvrij op je vrije leeftijd!</div>
+                            </div>
+                          )}
+                        </div>
+
+                        {deel.soort === "aflossingsvrij" && <div style={{ marginTop: 8, fontSize: 12, color: C.gold, background: `${C.gold}10`, border: `1px solid ${C.gold}30`, borderRadius: 8, padding: "8px 12px" }}>⚠ Aflossingsvrij: op einddatum ({c.eindjaar||"?"}) is {eur(deel.hoofdsom)} ineens opeisbaar.</div>}
                       </div>
                     );
                   })}
-                  {leningen.length > 0 && (
+                  {leningen.length > 0 && hypoRestschuld > 0 && (
                     <div style={{ padding: "14px 18px", background: hypotheekVrij ? C.greenPale : C.goldPale, borderTop: `1px solid ${C.border}` }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <div><div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Op vrije leeftijd ({stopLft} jaar)</div><div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{hypotheekVrij ? "✓ Alle leningen afgelost — hypotheekvrij!" : `Resterende maandlast: ${eur(hypoOpStop)}/mnd`}</div></div>
-                        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 600, color: hypotheekVrij ? C.greenLight : C.gold }}>{hypotheekVrij ? "Hypotheekvrij ✓" : `${eur(hypoOpStop)}/mnd`}</div>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Totaal op vrije leeftijd ({stopLft} jaar)</div>
+                          <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{hypotheekVrij ? "✓ Alle leningen afgelost — hypotheekvrij!" : `Nog ${jarenHypoNaStop} jaar hypotheek na je vrije leeftijd`}</div>
+                          {totaalExtraAfl > 0 && <div style={{ fontSize: 11, color: C.greenLight, marginTop: 2 }}>Incl. {eur(totaalExtraAfl)} extra aflossing</div>}
+                        </div>
+                        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 600, color: hypotheekVrij ? C.greenLight : hypotheekKleur }}>{hypotheekVrij ? "Hypotheekvrij ✓" : `${eur(hypoOpStop)}/mnd`}</div>
                       </div>
                     </div>
                   )}
@@ -461,9 +610,9 @@ export default function VrijheidsWizard() {
 
             {/* Verzekeringen */}
             <Card style={{ marginBottom: 10, padding: 0, overflow: "hidden" }}>
-              <button onClick={() => setVerzekOpen(!verzekOpen)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", background: "transparent", border: "none" }}>
+              <button onClick={() => setVerzekOpen(!verzekOpen)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", background: "transparent", border: "none", cursor: "pointer" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#7a5a8a", flexShrink: 0 }} />
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#7a5a8a" }} />
                   <span style={{ fontSize: 15, fontWeight: 600, color: C.text }}>🛡️ Verzekeringen</span>
                   {verzek.length > 0 && <span style={{ fontSize: 11, background: `${C.gold}20`, color: C.gold, padding: "2px 8px", borderRadius: 8, fontWeight: 600 }}>{verzek.length} geselecteerd</span>}
                 </div>
@@ -476,7 +625,7 @@ export default function VrijheidsWizard() {
                 <div style={{ padding: "0 20px 20px", borderTop: `1px solid ${C.border}` }}>
                   <p style={{ fontSize: 13, color: C.muted, margin: "14px 0 4px", lineHeight: 1.6 }}>Vink aan welke verzekeringen je hebt. <strong>De bedragen zijn gemiddelden</strong> — pas ze aan naar jouw situatie.</p>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
-                    {[...VERZEKERING_OPTIES, { id: "overig_v", label: "Overige verzekeringen", bench: 0, info: "Vul hier zelf een verzekering in die er niet tussen staat." }].map(opt => {
+                    {[...VERZEKERING_OPTIES, { id: "overig_v", label: "Overige verzekeringen", bench: 0, info: "Vul hier zelf een bedrag in voor verzekeringen die er niet tussen staan." }].map(opt => {
                       const sel = verzek.find(v => v.id === opt.id);
                       return (
                         <div key={opt.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: sel ? C.goldPale : C.surface, borderRadius: 10, border: `1px solid ${sel ? C.gold+"60" : C.border}` }}>
@@ -497,18 +646,22 @@ export default function VrijheidsWizard() {
               )}
             </Card>
 
-            {/* Categorie accordeons */}
+            {/* Categorie accordeons — mobiliteit apart, auto-inleg van hypotheek */}
             {CATS.map(groep => {
-              const isOpen = openGroep === groep.groep;
+              const isOpen     = openGroep === groep.groep;
+              const groepAandeel = getGroepAandeel(groep.groep);
               const totaalBruto = groep.items.reduce((s, item) => {
                 if (item.key === "onderhoud") return s + onderhoudMaand;
-                const v = effLs[item.key] || 0;
+                if (item.key === "verzekeringen") return s;
+                const v = ls[item.key] || 0;
+                if (item.key === "huurHypo" && !ls.huurder && hypoMaandNuOrig > 0) return s + hypoMaandNuOrig;
                 return s + (item.div ? v / item.div : v);
               }, 0);
-              const totaal = totaalBruto * partnerAandeel;
+              const totaal = totaalBruto * groepAandeel;
+
               return (
                 <Card key={groep.groep} style={{ marginBottom: 10, padding: 0, overflow: "hidden" }}>
-                  <button onClick={() => setOpenGroep(isOpen ? null : groep.groep)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", background: "transparent", border: "none" }}>
+                  <button onClick={() => setOpenGroep(isOpen ? null : groep.groep)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", background: "transparent", border: "none", cursor: "pointer" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <div style={{ width: 8, height: 8, borderRadius: "50%", background: groep.color, flexShrink: 0 }} />
                       <span style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{groep.icon} {groep.groep}</span>
@@ -520,28 +673,76 @@ export default function VrijheidsWizard() {
                   </button>
                   {isOpen && (
                     <div style={{ padding: "0 20px 20px", borderTop: `1px solid ${C.border}` }}>
+
+                      {/* Partner verdeling per categorie */}
                       {profiel.partner && (
-                        <div style={{ margin: "12px 0 0", padding: "8px 12px", background: C.goldPale, borderRadius: 8, fontSize: 12, color: C.muted }}>
-                          💡 Bedragen hieronder zijn het <strong>totaal</strong>. Jouw aandeel ({profiel.partnerVerdeling}%) wordt automatisch berekend.
+                        <div style={{ margin: "12px 0 14px", padding: "12px 14px", background: C.goldPale, borderRadius: 10, border: `1px solid ${C.gold}30` }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 8 }}>💑 Verdeling voor {groep.groep}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <span style={{ fontSize: 12, color: C.muted, whiteSpace: "nowrap" }}>Jij:</span>
+                            <input type="range" min={0} max={100} step={5}
+                              value={profiel.partnerPerCategorie[groep.groep] ?? profiel.partnerVerdeling}
+                              onChange={e => setP("partnerPerCategorie", { ...profiel.partnerPerCategorie, [groep.groep]: +e.target.value })}
+                              style={{ flex: 1 }} />
+                            <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 14, color: C.gold, fontWeight: 600, minWidth: 36 }}>{profiel.partnerPerCategorie[groep.groep] ?? profiel.partnerVerdeling}%</span>
+                            {profiel.partnerPerCategorie[groep.groep] !== undefined && (
+                              <button onClick={() => { const p2 = { ...profiel.partnerPerCategorie }; delete p2[groep.groep]; setP("partnerPerCategorie", p2); }} style={{ fontSize: 10, color: C.muted, background: "transparent", border: "none", cursor: "pointer" }}>↺ standaard</button>
+                            )}
+                          </div>
                         </div>
                       )}
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 16 }}>
-                        {groep.items.map(item => {
-                          const v   = item.key === "onderhoud" ? onderhoudMaand : (effLs[item.key] || 0);
+
+                      {/* Mobiliteit — zichtbare kostenuitleg + preset */}
+                      {groep.groep === "Mobiliteit" && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 10 }}>🚗 Wat valt onder autokosten?</div>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 14 }}>
+                            {MOBILITEIT_UITLEG.map((m, i) => (
+                              <div key={i} style={{ background: C.surface, borderRadius: 8, padding: "8px 10px", border: `1px solid ${C.border}` }}>
+                                <div style={{ fontSize: 16, marginBottom: 3 }}>{m.icon}</div>
+                                <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{m.label}</div>
+                                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{m.sub}</div>
+                              </div>
+                            ))}
+                          </div>
+                          <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Autoverzekering vul je bij Verzekeringen in — dat tellen we hier niet dubbel.</div>
+                          <PresetKnoppen presets={AUTO_PRESETS} value={ls.auto || 0} onChange={v => setL("auto", v)} label="Kies jouw autotype of vul zelf in" />
+                        </div>
+                      )}
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 0 }}>
+                        {groep.items.filter(item => {
+                          if (groep.groep === "Mobiliteit" && item.key === "auto") return false; // al gedaan via preset
+                          if (item.key === "verzekeringen") return false; // aparte sectie
+                          return true;
+                        }).map(item => {
+                          const isHuurHypo = item.key === "huurHypo";
+                          const v = item.key === "onderhoud" ? onderhoudMaand
+                            : isHuurHypo && !ls.huurder && hypoMaandNuOrig > 0 ? hypoMaandNuOrig
+                            : (ls[item.key] || 0);
                           const bM  = item.div ? item.bench / item.div : item.bench;
                           const vM  = item.div ? v / item.div : v;
                           const low = bM > 50 && vM > 0 && vM < bM * 0.5;
+
+                          const isBoodschappen = item.key === "boodschappen";
+                          const isReadonly     = isHuurHypo && !ls.huurder && hypoMaandNuOrig > 0;
+
                           return (
                             <div key={item.key}>
                               <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
                                 <span style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 500 }}>{item.label}</span>
-                                {item.info && <span title={item.info} style={{ width: 16, height: 16, borderRadius: "50%", background: C.goldPale, border: `1px solid ${C.gold}50`, fontSize: 10, color: C.gold, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", flexShrink: 0, fontWeight: 700 }}>?</span>}
                               </div>
                               {item.key === "onderhoud" ? (
                                 <div style={{ display: "flex", gap: 6 }}>
                                   <NumInp value={ls.onderhoudOverride !== null ? ls.onderhoudOverride : autoOnderhoud} onChange={v => setL("onderhoudOverride", v)} prefix="€" suffix="/mnd" placeholder="0" />
                                   {ls.onderhoudOverride !== null && <button onClick={() => setL("onderhoudOverride", null)} style={{ background: C.goldPale, border: `1px solid ${C.gold}40`, borderRadius: 8, padding: "8px 8px", fontSize: 10, color: C.gold }}>↺</button>}
                                 </div>
+                              ) : isReadonly ? (
+                                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", fontFamily: "'DM Mono',monospace", fontSize: 14, color: C.muted }}>
+                                  {eur(v)}/mnd <span style={{ fontSize: 10 }}>(uit hypotheek)</span>
+                                </div>
+                              ) : isBoodschappen ? (
+                                <PresetKnoppen presets={BOODSCHAPPEN_PRESETS} value={v} onChange={val => setL(item.key, val)} />
                               ) : (
                                 <div>
                                   <NumInp value={v} onChange={val => setL(item.key, val)} suffix={item.suffix} placeholder="0" />
@@ -567,18 +768,16 @@ export default function VrijheidsWizard() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 22, fontWeight: 600, color: C.text }}>Jouw maandelijkse uitgaven</div>
-                  <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>wat je straks per maand nodig hebt</div>
-                  {hypotheekVrij && <div style={{ fontSize: 12, color: C.greenLight, marginTop: 3 }}>✓ Hypotheekvrij op vrije leeftijd</div>}
-                  {kinderenWegOpStop.length > 0 && <div style={{ fontSize: 12, color: C.greenLight, marginTop: 2 }}>✓ {kinderenWegOpStop.length} {kinderenWegOpStop.length === 1 ? "kind" : "kinderen"} uit huis ({eur(kinderKostenWeg * partnerAandeel)}/mnd minder)</div>}
+                  <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>Jouw aandeel op vrije leeftijd</div>
+                  {hypotheekVrij && <div style={{ fontSize: 12, color: C.greenLight, marginTop: 3 }}>🎉 Hypotheekvrij op vrije leeftijd — scheelt {eur(hypoOpStopOrig * partnerAandeel)}/mnd</div>}
+                  {kinderenWegOpStop.length > 0 && <div style={{ fontSize: 12, color: C.greenLight }}>✓ Kinderen uit huis — scheelt {eur(kinderKostenWeg * partnerAandeel)}/mnd</div>}
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 36, color: C.gold, fontWeight: 500 }}>{eur(maandOpStop)}</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>/mnd op vrije leeftijd · nu {eur(maandNu)}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>/mnd · nu {eur(maandNu)}</div>
                 </div>
               </div>
-              <div style={{ marginTop: 12 }}>
-                <InfoBox>Over {jarenTotStop} jaar kost dit door prijsstijgingen (2,5%/jaar) <strong>{eur(jaarOpStop)} per jaar</strong>.</InfoBox>
-              </div>
+              <InfoBox style={{ marginTop: 10 }}>Over {jarenTotStop} jaar kost dit door prijsstijgingen <strong>{eur(jaarOpStop)} per jaar</strong>.</InfoBox>
             </Card>
 
             <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
@@ -594,42 +793,71 @@ export default function VrijheidsWizard() {
         {stap === 2 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <Card accent={C.greenLight}>
-              <Kop size={26} sub="Voeg al je rekeningen en spaarpotten toe. Je ziet direct hoe ze groeien over de tijd.">Jouw geld</Kop>
+              <Kop size={26} sub="Voeg al je rekeningen en bezittingen toe. Je ziet direct hoe elk bijdraagt aan jouw vrijheid.">Jouw geld</Kop>
 
-              {/* Uitleg */}
-              <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
+              {/* Noodfonds — prominent */}
+              <div style={{ marginTop: 16, background: noodfondsPct >= 100 ? C.greenPale : noodfondsPct >= 50 ? C.goldPale : `${C.red}10`, borderRadius: 14, padding: "16px 20px", border: `2px solid ${noodfondsPct >= 100 ? C.greenLight : noodfondsPct >= 50 ? C.gold : C.red}40` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>🛟 Noodfonds</div>
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.5 }}>
+                      Een noodfonds is een direct beschikbaar bedrag voor onverwachte uitgaven — auto-pech, kapotte wasmachine, medische kosten. Aanbevolen: <strong>6 maanden</strong> van je vaste lasten ({eur(cashNodig)}).
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
+                    <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 22, fontWeight: 700, color: noodfondsPct >= 100 ? C.greenLight : noodfondsPct >= 50 ? C.gold : C.red }}>{noodfondsPct}%</div>
+                    <div style={{ fontSize: 11, color: C.muted }}>gedekt</div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ flex: 1, height: 10, background: C.surface, borderRadius: 5, overflow: "hidden" }}>
+                    <div style={{ width: `${noodfondsPct}%`, height: "100%", background: noodfondsPct >= 100 ? C.greenLight : noodfondsPct >= 50 ? C.gold : C.red, borderRadius: 5, transition: "width 0.3s" }} />
+                  </div>
+                  <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: C.muted, whiteSpace: "nowrap" }}>{eur(spaartotaal)} / {eur(cashNodig)}</span>
+                </div>
+                {noodfondsPct < 100 && <div style={{ marginTop: 8, fontSize: 12, color: noodfondsPct >= 50 ? C.gold : C.red }}>
+                  {noodfondsPct < 50 ? `Je noodfonds is nog laag. Bouw eerst ${eur(cashNodig - spaartotaal)} op voordat je verder belegt.` : `Goed op weg! Nog ${eur(cashNodig - spaartotaal)} voor een volledig noodfonds.`}
+                </div>}
+                {noodfondsPct >= 100 && <div style={{ marginTop: 8, fontSize: 12, color: C.greenLight, fontWeight: 600 }}>✓ Je noodfonds is op orde. Alles extra kan je laten groeien.</div>}
+              </div>
+
+              {/* Categorie uitleg */}
+              <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
                 {ACCOUNT_CATS.map(cat => (
                   <div key={cat.id} style={{ background: C.surface, borderRadius: 10, padding: "12px 14px", border: `1px solid ${C.border}` }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                       <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{cat.emoji} {cat.label}</div>
-                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: cat.kleur, fontWeight: 600, background: `${cat.kleur}18`, padding: "2px 8px", borderRadius: 6 }}>~{(cat.rendMidden * 100).toFixed(0)}%/jr</span>
+                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: cat.kleur, fontWeight: 600, background: `${cat.kleur}18`, padding: "2px 7px", borderRadius: 6 }}>~{(cat.rendMidden * 100).toFixed(0)}%/jr</span>
                     </div>
-                    <div style={{ fontSize: 12, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>{cat.uitleg}</div>
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>{cat.uitleg}</div>
                     <button onClick={() => addAccount(cat.id)} style={{ marginTop: 10, background: `${cat.kleur}15`, border: `1px solid ${cat.kleur}40`, borderRadius: 8, padding: "6px 12px", fontSize: 12, color: cat.kleur, fontWeight: 600, cursor: "pointer" }}>+ Toevoegen</button>
                   </div>
                 ))}
               </div>
 
-              {/* Spaarrente melding */}
-              <div style={{ marginTop: 12, background: C.goldPale, borderRadius: 10, padding: "10px 14px", border: `1px solid ${C.gold}30`, fontSize: 12, color: C.muted }}>
-                💡 <strong>Spaarrente:</strong> We hanteren {(spaarrente * 100).toFixed(1)}% als standaard spaarrente (markttarief {SPAARRENTE_DATUM}). Dit is wat de meeste banken momenteel bieden op een vrij opneembare spaarrekening. Je kunt dit per rekening aanpassen.
+              <div style={{ marginTop: 10, background: C.goldPale, borderRadius: 10, padding: "10px 14px", border: `1px solid ${C.gold}30`, fontSize: 12, color: C.muted }}>
+                💡 <strong>Spaarrente:</strong> {(spaarrente * 100).toFixed(1)}% ({SPAARRENTE_DATUM}). Dit is de gemiddelde marktrente voor vrij opneembare spaarrekeningen. Je kunt dit per rekening aanpassen.
               </div>
 
-              {/* Toegevoegde accounts */}
-              {accounts.length === 0 && (
-                <div style={{ marginTop: 16, padding: "20px", textAlign: "center", color: C.dim, fontSize: 14, fontStyle: "italic" }}>
-                  Klik op "+ Toevoegen" hierboven om je eerste rekening toe te voegen.
-                </div>
-              )}
+              {accounts.length === 0 && <div style={{ marginTop: 16, padding: "20px", textAlign: "center", color: C.dim, fontSize: 14, fontStyle: "italic" }}>Klik hierboven op "+ Toevoegen" om te beginnen.</div>}
 
               {accounts.map(acc => {
                 const cat = ACCOUNT_CATS.find(c => c.id === acc.catId);
+                const waardeBij = (acc.waarde || 0) > 0 || (acc.inlegMnd || 0) > 0
+                  ? (acc.waarde || 0) * Math.pow(1 + acc.rendement, jarenTotStop) + (acc.inlegMnd || 0) * 12 * ((Math.pow(1 + acc.rendement, jarenTotStop) - 1) / (acc.rendement || 0.001))
+                  : 0;
+                const groei    = waardeBij - (acc.waarde || 0) - (acc.inlegMnd || 0) * 12 * jarenTotStop;
+                const ingelegd = (acc.inlegMnd || 0) * 12 * jarenTotStop;
                 return (
-                  <div key={acc.id} style={{ marginTop: 10, background: C.surface, borderRadius: 12, border: `2px solid ${cat?.kleur || C.border}30`, padding: "16px 18px" }}>
+                  <div key={acc.id} ref={el => accountRefs.current[acc.id] = el} style={{ marginTop: 10, background: C.surface, borderRadius: 12, border: `2px solid ${cat?.kleur || C.border}30`, padding: "16px 18px" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontSize: 18 }}>{cat?.emoji || "💼"}</span>
-                        <input value={acc.label} onChange={e => updAccount(acc.id, "label", e.target.value)} style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 16, fontWeight: 600, color: C.text, background: "transparent", border: "none", borderBottom: `1px solid ${C.border}`, padding: "2px 4px", width: 180 }} />
+                        <div>
+                          <input value={acc.label} onChange={e => updAccount(acc.id, "label", e.target.value)}
+                            style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 16, fontWeight: 600, color: C.text, background: "transparent", border: "none", borderBottom: `1px dashed ${C.border}`, padding: "2px 4px", width: 180 }} />
+                          <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>✏️ Klik om naam te wijzigen</div>
+                        </div>
                         <span style={{ fontSize: 11, background: `${cat?.kleur || C.gold}18`, color: cat?.kleur || C.gold, padding: "2px 8px", borderRadius: 6, fontWeight: 600 }}>{cat?.label}</span>
                       </div>
                       <button onClick={() => delAccount(acc.id)} style={{ background: "transparent", border: "none", color: C.dim, fontSize: 18 }}>×</button>
@@ -637,7 +865,7 @@ export default function VrijheidsWizard() {
 
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
                       <div>
-                        <Lbl info="Hoeveel staat er nu op deze rekening?">Huidig saldo</Lbl>
+                        <Lbl info="Hoeveel staat er nu op deze rekening of in dit bezit?">Huidige waarde</Lbl>
                         <NumInp value={acc.waarde} onChange={v => updAccount(acc.id, "waarde", v)} prefix="€" placeholder="0" />
                       </div>
                       <div>
@@ -645,54 +873,81 @@ export default function VrijheidsWizard() {
                         <NumInp value={acc.inlegMnd} onChange={v => updAccount(acc.id, "inlegMnd", v)} prefix="€" suffix="/mnd" placeholder="0" />
                       </div>
                       <div>
-                        <Lbl info={cat?.id === "sparen" ? "Rente die de bank betaalt. Volgt de marktrente." : `Verwacht jaarlijks rendement. Vuistregel: ${((cat?.rendBand?.[0]||0)*100).toFixed(0)}–${((cat?.rendBand?.[1]||0.1)*100).toFixed(0)}% voor dit type.`}>
-                          Rendement/jaar
-                        </Lbl>
+                        <Lbl info={acc.catId === "sparen" ? "Rente die de bank betaalt per jaar." : `Verwacht jaarlijks groeipercentage. Vuistregel: ${((cat?.rendBand?.[0]||0)*100).toFixed(0)}–${((cat?.rendBand?.[1]||0.1)*100).toFixed(0)}%.`}>Groei per jaar (%)</Lbl>
                         <NumInp value={+(acc.rendement * 100).toFixed(1)} onChange={v => updAccount(acc.id, "rendement", v / 100)} suffix="%" placeholder="5" />
-                        {cat?.rendBand && <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>Vuistregel: {(cat.rendBand[0]*100).toFixed(0)}–{(cat.rendBand[1]*100).toFixed(0)}%/jr voor dit type</div>}
+                        {cat?.rendBand && <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>Vuistregel: {(cat.rendBand[0]*100).toFixed(0)}–{(cat.rendBand[1]*100).toFixed(0)}%/jr</div>}
                       </div>
                     </div>
 
-                    {/* Mini prognose per account */}
-                    {acc.waarde > 0 && (
-                      <div style={{ marginTop: 12, background: `${cat?.kleur || C.gold}08`, borderRadius: 8, padding: "10px 14px", border: `1px solid ${cat?.kleur || C.gold}20` }}>
-                        {(() => {
-                          const waardeBij = acc.waarde * Math.pow(1 + acc.rendement, jarenTotStop) + acc.inlegMnd * 12 * ((Math.pow(1 + acc.rendement, jarenTotStop) - 1) / acc.rendement || jarenTotStop);
-                          const groei = waardeBij - acc.waarde - acc.inlegMnd * 12 * jarenTotStop;
-                          return (
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                              <div style={{ fontSize: 12, color: C.muted }}>Op vrije leeftijd ({stopLft} jaar):</div>
-                              <div style={{ display: "flex", gap: 14 }}>
-                                <div style={{ textAlign: "right" }}>
-                                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 18, color: cat?.kleur || C.gold, fontWeight: 600 }}>{eur(waardeBij)}</div>
-                                  <div style={{ fontSize: 10, color: C.muted }}>waarvan {eur(Math.max(0,groei))} rente/groei</div>
-                                </div>
-                              </div>
+                    {/* Compounding visualisatie */}
+                    {waardeBij > 0 && (
+                      <div style={{ marginTop: 12, background: `${cat?.kleur || C.gold}08`, borderRadius: 10, padding: "12px 16px", border: `1px solid ${cat?.kleur || C.gold}20` }}>
+                        <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Op vrije leeftijd ({stopLft} jaar) — effect van rente-op-rente:</div>
+                        <div style={{ display: "flex", gap: 4, height: 40, alignItems: "flex-end", marginBottom: 6 }}>
+                          {[
+                            { lbl: "Huidig saldo", val: acc.waarde || 0, kleur: cat?.kleur || C.gold, opacity: 0.4 },
+                            { lbl: "Ingelegd", val: ingelegd, kleur: cat?.kleur || C.gold, opacity: 0.65 },
+                            { lbl: "Groei (rente)", val: Math.max(0, groei), kleur: cat?.kleur || C.gold, opacity: 1.0 },
+                          ].map((bar, i) => (
+                            <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                              <div style={{ width: "100%", background: bar.kleur, opacity: bar.opacity, borderRadius: 4, height: `${waardeBij > 0 ? Math.max(8, (bar.val / waardeBij) * 40) : 8}px` }} />
+                              <div style={{ fontSize: 10, color: C.muted, textAlign: "center", lineHeight: 1.3 }}>{bar.lbl}</div>
+                              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: cat?.kleur || C.gold, fontWeight: 600 }}>{eur(bar.val)}</div>
                             </div>
-                          );
-                        })()}
+                          ))}
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                            <div style={{ width: "100%", background: cat?.kleur || C.gold, borderRadius: 4, height: "40px" }} />
+                            <div style={{ fontSize: 10, color: C.muted, textAlign: "center", lineHeight: 1.3 }}>Totaal</div>
+                            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: cat?.kleur || C.gold, fontWeight: 700 }}>{eur(waardeBij)}</div>
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 11, color: cat?.kleur || C.gold }}>
+                          Jouw geld werkt voor je: <strong>{eur(Math.max(0,groei))}</strong> extra dankzij {(acc.rendement * 100).toFixed(1)}% groei per jaar over {jarenTotStop} jaar.
+                        </div>
                       </div>
                     )}
                   </div>
                 );
               })}
 
-              {/* Totaal + cashbuffer */}
-              {accounts.length > 0 && (
-                <div style={{ marginTop: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", background: C.greenPale, borderRadius: 12, border: `1px solid ${C.greenLight}40` }}>
-                    <div>
-                      <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 18, fontWeight: 600, color: C.text }}>Totaal vermogen</div>
-                      <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Maandelijkse inleg: {eur(totaalInleg)}/mnd</div>
+              {/* Schulden */}
+              <div style={{ marginTop: 20, borderTop: `1px solid ${C.border}`, paddingTop: 18 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>💳 Schulden</div>
+                    <div style={{ fontSize: 12, color: C.muted }}>Schulden worden van je vermogen afgetrokken</div>
+                  </div>
+                  <button onClick={addSchuld} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 14px", fontSize: 13, color: C.muted }}>+ Schuld toevoegen</button>
+                </div>
+                {schulden.length === 0 && <div style={{ fontSize: 13, color: C.dim, fontStyle: "italic" }}>Geen schulden — goed bezig!</div>}
+                {schulden.map(s => (
+                  <div key={s.id} ref={el => accountRefs.current["schuld_" + s.id] = el} style={{ padding: "14px 16px", background: `${C.red}08`, borderRadius: 12, border: `1px solid ${C.red}30`, marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                      <input value={s.label} onChange={e => updSchuld(s.id, "label", e.target.value)} style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 14, fontWeight: 600, color: C.text, background: "transparent", border: "none", borderBottom: `1px dashed ${C.border}`, padding: "2px 4px", width: 160 }} />
+                      <button onClick={() => delSchuld(s.id)} style={{ background: "transparent", border: "none", color: C.dim, fontSize: 18 }}>×</button>
                     </div>
-                    <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 28, color: C.greenLight, fontWeight: 600 }}>{eur(totaalVerm)}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                      <div><Lbl>Totale schuld</Lbl><NumInp value={s.bedrag} onChange={v => updSchuld(s.id, "bedrag", v)} prefix="€" placeholder="0" /></div>
+                      <div><Lbl>Rente/jaar</Lbl><NumInp value={s.rente} onChange={v => updSchuld(s.id, "rente", v)} suffix="%" placeholder="0" /></div>
+                      <div><Lbl>Maandlast</Lbl><NumInp value={s.maandlast} onChange={v => updSchuld(s.id, "maandlast", v)} prefix="€" suffix="/mnd" placeholder="0" /></div>
+                    </div>
                   </div>
+                ))}
+                {schulden.length > 0 && (
+                  <div style={{ padding: "10px 14px", background: `${C.red}10`, borderRadius: 10, border: `1px solid ${C.red}30`, fontSize: 13, color: C.red, fontWeight: 600 }}>
+                    Totale schulden: {eur(totaalSchulden)} · Maandlasten: {eur(maandlastSchulden)}/mnd
+                  </div>
+                )}
+              </div>
 
-                  <div style={{ marginTop: 12 }}>
-                    <BarVoortgang value={Math.min(accounts.find(a=>a.catId==="sparen")?.waarde||0, cashNodig)} max={cashNodig} color={C.gold}
-                      label={`Noodfonds — aanbevolen: 6 maanden uitgaven (${eur(cashNodig)})`}
-                      sub={`Dit is een vangnet voor onverwachte kosten. Reken op minimaal 3–6 maanden van je vaste lasten.`} />
+              {/* Totaal vermogen */}
+              {accounts.length > 0 && (
+                <div style={{ marginTop: 16, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", background: totaalVerm > 0 ? C.greenPale : `${C.red}10`, borderRadius: 12, border: `1px solid ${totaalVerm > 0 ? C.greenLight : C.red}40` }}>
+                  <div>
+                    <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 18, fontWeight: 600, color: C.text }}>Netto vermogen</div>
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Bezittingen min schulden · Inleg: {eur(totaalInleg)}/mnd</div>
                   </div>
+                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 28, color: totaalVerm > 0 ? C.greenLight : C.red, fontWeight: 600 }}>{eur(totaalVerm)}</div>
                 </div>
               )}
             </Card>
@@ -700,15 +955,15 @@ export default function VrijheidsWizard() {
             {/* Prognose grafiek */}
             {accounts.length > 0 && grafData.length > 0 && (
               <Card>
-                <Kop size={18} sub="Zo groeit jouw geld — drie scenario's tegelijk zichtbaar">Vermogensgroei over de tijd</Kop>
+                <Kop size={18} sub="Dit is de optelsom van al je bezittingen — elk met een ander rendement">Vermogensgroei — gecombineerd overzicht</Kop>
                 <p style={{ fontSize: 13, color: C.muted, marginTop: 6, lineHeight: 1.6 }}>
-                  Het <span style={{ color: C.gold, fontWeight: 600 }}>middelste scenario</span> is het meest waarschijnlijk. <span style={{ color: C.greenLight, fontWeight: 600 }}>Optimistisch</span> = 40% beter rendement, <span style={{ color: C.red, fontWeight: 600 }}>pessimistisch</span> = 40% minder. Dit laat zien hoe groot de onzekerheid is.
+                  De grafiek toont hoe al jouw geld samen groeit. {accounts.length > 1 ? `Je hebt ${accounts.length} posten ingevoerd — elk groeit tegen eigen rendement.` : ""} De drie lijnen laten zien wat er kan gebeuren als beleggingen tegenvallen, gemiddeld uitpakken, of meevallen.
                 </p>
                 <div style={{ display: "flex", gap: 10, marginTop: 12, marginBottom: 4, flexWrap: "wrap" }}>
                   {[
-                    { lbl: "😟 Pessimistisch", val: eur(vermOpStopP), clr: C.red },
-                    { lbl: "📊 Waarschijnlijk", val: eur(vermOpStopM), clr: C.gold },
-                    { lbl: "🚀 Optimistisch",  val: eur(vermOpStopO), clr: C.greenLight },
+                    { lbl: "😟 Tegenvaller", val: eur(vermOpStopP), clr: C.red },
+                    { lbl: "📊 Verwacht",    val: eur(vermOpStopM), clr: C.gold },
+                    { lbl: "🚀 Meevaller",   val: eur(vermOpStopO), clr: C.greenLight },
                   ].map((s,i) => (
                     <div key={i} style={{ background: C.surface, borderRadius: 10, padding: "10px 16px", border: `1px solid ${C.border}` }}>
                       <div style={{ fontSize: 11, color: s.clr, fontWeight: 600, marginBottom: 3 }}>{s.lbl}</div>
@@ -721,18 +976,18 @@ export default function VrijheidsWizard() {
                   <ResponsiveContainer>
                     <AreaChart data={grafData}>
                       <defs>
-                        <linearGradient id="gOpt"    x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.greenLight} stopOpacity={0.2}/><stop offset="95%" stopColor={C.greenLight} stopOpacity={0}/></linearGradient>
-                        <linearGradient id="gMid"    x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.gold}       stopOpacity={0.2}/><stop offset="95%" stopColor={C.gold}       stopOpacity={0}/></linearGradient>
-                        <linearGradient id="gPess"   x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.red}        stopOpacity={0.15}/><stop offset="95%" stopColor={C.red}       stopOpacity={0}/></linearGradient>
+                        <linearGradient id="gOpt2" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.greenLight} stopOpacity={0.2}/><stop offset="95%" stopColor={C.greenLight} stopOpacity={0}/></linearGradient>
+                        <linearGradient id="gMid2" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.gold}       stopOpacity={0.2}/><stop offset="95%" stopColor={C.gold}       stopOpacity={0}/></linearGradient>
+                        <linearGradient id="gPes2" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.red}        stopOpacity={0.15}/><stop offset="95%" stopColor={C.red}       stopOpacity={0}/></linearGradient>
                       </defs>
                       <CartesianGrid stroke={C.border} strokeDasharray="3 3" vertical={false} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} />
                       <YAxis tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} tickFormatter={v => v >= 1000000 ? `€${(v/1000000).toFixed(1)}M` : `€${(v/1000).toFixed(0)}k`} />
                       <Tooltip content={<ScenTip />} />
                       <ReferenceLine y={benodigdPot} stroke={C.gold} strokeDasharray="6 3" label={{ value: "Doel", fill: C.gold, fontSize: 11, position: "insideTopRight" }} />
-                      <Area type="monotone" dataKey="opt"     name="🚀 Optimistisch"  stroke={C.greenLight} fill="url(#gOpt)"  strokeWidth={2}   dot={false} />
-                      <Area type="monotone" dataKey="vermogen" name="📊 Waarschijnlijk" stroke={C.gold}       fill="url(#gMid)"  strokeWidth={2.5} dot={false} />
-                      <Area type="monotone" dataKey="pess"    name="😟 Pessimistisch" stroke={C.red}        fill="url(#gPess)" strokeWidth={2}   dot={false} strokeDasharray="4 2" />
+                      <Area type="monotone" dataKey="opt"      name="🚀 Meevaller"  stroke={C.greenLight} fill="url(#gOpt2)" strokeWidth={2}   dot={false} />
+                      <Area type="monotone" dataKey="vermogen" name="📊 Verwacht"   stroke={C.gold}       fill="url(#gMid2)" strokeWidth={2.5} dot={false} />
+                      <Area type="monotone" dataKey="pess"     name="😟 Tegenvaller" stroke={C.red}       fill="url(#gPes2)" strokeWidth={2}   dot={false} strokeDasharray="4 2" />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -753,14 +1008,13 @@ export default function VrijheidsWizard() {
           <Card accent={C.gold}>
             <Kop size={26} sub="Pensioen is geld dat je later krijgt. We leggen stap voor stap uit wat voor jou van toepassing is.">Pensioen & AOW</Kop>
 
-            {/* Uitleg pensioen simpel */}
             <div style={{ marginTop: 20, background: C.surface, borderRadius: 12, padding: "16px 18px", border: `1px solid ${C.border}` }}>
-              <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 17, fontWeight: 600, marginBottom: 10, color: C.text }}>📚 Hoe werkt pensioen?</div>
+              <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 17, fontWeight: 600, marginBottom: 10, color: C.text }}>📚 Drie soorten inkomsten later</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
                 {[
-                  { icon: "🏛️", titel: "AOW", sub: "Van de overheid", tekst: `Iedereen in Nederland krijgt automatisch AOW vanaf ${aow.leeftijd} jaar. Je hoeft hier niets voor te doen.`, kleur: C.greenLight },
-                  { icon: "🏢", titel: "Werkgeverspensioen", sub: "Via je baas", tekst: "Als je in loondienst werkt bouwt je werkgever pensioen voor je op. Je krijgt dit vanaf je pensioendatum (vaak 68 jaar).", kleur: C.gold },
-                  { icon: "🔒", titel: "Eigen pensioen", sub: "Zelf geregeld", tekst: "Extra pensioen dat je zelf hebt opgebouwd via banksparen of lijfrente. Belastingvoordeel tijdens opbouw.", kleur: "#7a5a8a" },
+                  { icon: "🏛️", titel: "AOW", sub: "Van de overheid", tekst: `Iedereen in NL krijgt automatisch AOW vanaf ${aow.leeftijd} jaar. Je hoeft hier niets voor te doen.`, kleur: C.greenLight },
+                  { icon: "🏢", titel: "Via werkgever", sub: "Als je in loondienst werkt", tekst: "Je werkgever bouwt pensioen voor je op. Je krijgt dit pas op je pensioendatum (vaak 68 jaar).", kleur: C.gold },
+                  { icon: "🔒", titel: "Eigen opbouw", sub: "Zelf geregeld", tekst: "Extra pensioen dat je zelf hebt opgebouwd via banksparen of lijfrente — inclusief de lijfrente-rekeningen die je bij 'Jouw geld' hebt toegevoegd.", kleur: "#7a5a8a" },
                 ].map((blok, i) => (
                   <div key={i} style={{ background: C.card, borderRadius: 10, padding: "14px 14px", border: `1px solid ${blok.kleur}30` }}>
                     <div style={{ fontSize: 22, marginBottom: 6 }}>{blok.icon}</div>
@@ -772,71 +1026,74 @@ export default function VrijheidsWizard() {
               </div>
             </div>
 
-            {/* AOW blok */}
+            {/* AOW */}
             <div style={{ marginTop: 16, background: aow.zeker ? C.greenPale : C.goldPale, borderRadius: 12, padding: "16px 18px", border: `1px solid ${(aow.zeker ? C.greenLight : C.gold)}40` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Jouw AOW — automatisch vanaf {aow.leeftijd} jaar</div>
                   <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>{aow.bron}</div>
                   {aow.disclaimer && <div style={{ fontSize: 11, color: C.textSub, marginTop: 4, lineHeight: 1.6 }}>⚠️ {aow.disclaimer}</div>}
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>{profiel.partner ? "Samenwonend tarief — jij en je partner ontvangen elk dit bedrag" : "Alleenstaand tarief"}</div>
-                  {aowGat && <div style={{ marginTop: 8, fontSize: 13, fontWeight: 600, color: C.red }}>Je stopt {jarenGat} jaar vóór je AOW — dit gat moet je overbruggen met je eigen spaargeld.</div>}
+                  {aowGat && <div style={{ marginTop: 8, fontSize: 13, fontWeight: 600, color: C.red }}>Je stopt {jarenGat} jaar vóór je AOW. Dit gat van {eur(maandOpStop * 12 * jarenGat)} overbrugt je met eigen vermogen.</div>}
                 </div>
                 <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
                   <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 24, color: aow.zeker ? C.greenLight : C.gold, fontWeight: 600 }}>{eur(aowMaand)}/mnd</div>
-                  {profiel.partner && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>per persoon</div>}
-                  <span style={{ fontSize: 10, background: aow.zeker ? `${C.greenLight}20` : `${C.gold}20`, color: aow.zeker ? C.green : C.gold, padding: "2px 10px", borderRadius: 10, fontWeight: 600, textTransform: "uppercase", display: "inline-block", marginTop: 4 }}>{aow.zeker ? "Officieel ✓" : "Schatting"}</span>
+                  <span style={{ fontSize: 10, background: aow.zeker ? `${C.greenLight}20` : `${C.gold}20`, color: aow.zeker ? C.green : C.gold, padding: "2px 10px", borderRadius: 10, fontWeight: 600, display: "inline-block", marginTop: 4 }}>{aow.zeker ? "Officieel ✓" : "Schatting"}</span>
                 </div>
               </div>
             </div>
 
-            {/* Werkgeverspensioen */}
+            {/* Werkgever */}
             <div style={{ marginTop: 16 }}>
               <CheckBox checked={pens.heeftWerkgever} onChange={v => setPn("heeftWerkgever", v)}
                 label="Ik heb pensioen via mijn werkgever"
                 sub="In loondienst? Dan bouwt je werkgever waarschijnlijk pensioen voor je op." />
               {pens.heeftWerkgever && (
                 <div style={{ marginTop: 12, background: C.surface, borderRadius: 12, padding: "16px 18px", border: `1px solid ${C.border}` }}>
-                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 14 }}>
-                    Kijk op <strong>mijnpensioenoverzicht.nl</strong> voor jouw exacte bedragen. Zoek naar "verwacht pensioen op pensioendatum".
-                  </p>
+                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 14 }}>Kijk op <strong>mijnpensioenoverzicht.nl</strong> voor jouw bedragen. Zoek naar "verwacht pensioen op pensioendatum".</p>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                     <div>
-                      <Lbl info="Maandelijks bedrag dat je later ontvangt. Staat op je pensioenoverzicht.">Verwacht pensioen</Lbl>
+                      <Lbl info="Staat op je pensioenoverzicht als 'verwacht pensioen'.">Verwacht bedrag</Lbl>
                       <NumInp value={pens.werkgever} onChange={v => setPn("werkgever", v)} prefix="€" suffix="/mnd" placeholder="0" />
                     </div>
                     <div>
-                      <Lbl info="Vanaf welke leeftijd ontvang je dit pensioen? Staat ook op je pensioenoverzicht. Vaak 67 of 68 jaar.">Beschikbaar vanaf</Lbl>
+                      <Lbl info="Vanaf welke leeftijd ontvang je dit? Staat ook op het overzicht. Vaak 67 of 68 jaar.">Beschikbaar vanaf</Lbl>
                       <NumInp value={pens.werkgeverLeeftijd} onChange={v => setPn("werkgeverLeeftijd", v)} suffix="jaar" placeholder="68" />
                     </div>
                   </div>
-                  {pens.werkgeverLeeftijd > stopLft && (
-                    <InfoBox type="let_op" style={{ marginTop: 10 }}>Dit pensioen is pas beschikbaar op {pens.werkgeverLeeftijd} jaar — je stopt op {stopLft}. Je overbrugt {pens.werkgeverLeeftijd - stopLft} jaar zonder dit inkomen.</InfoBox>
-                  )}
+                  {pens.werkgeverLeeftijd > stopLft && <InfoBox type="let_op" style={{ marginTop: 10 }}>Dit pensioen komt pas op {pens.werkgeverLeeftijd} jaar. De {pens.werkgeverLeeftijd - stopLft} jaar daarvoor leef je alleen van je eigen vermogen.</InfoBox>}
                 </div>
               )}
             </div>
 
-            {/* Eigen pensioen */}
+            {/* Eigen pensioen — auto-gevuld vanuit lijfrente */}
             <div style={{ marginTop: 12 }}>
               <CheckBox checked={pens.heeftEigen} onChange={v => setPn("heeftEigen", v)}
                 label="Ik heb zelf extra pensioen opgebouwd"
-                sub="Eigen spaarrekening voor later, lijfrente of bankspaarproduct." />
+                sub="Eigen bankspaarrekening, lijfrente, of ander pensioenproduct." />
               {pens.heeftEigen && (
                 <div style={{ marginTop: 12, background: C.surface, borderRadius: 12, padding: "16px 18px", border: `1px solid ${C.border}` }}>
+                  {lijfrenteAccounts.length > 0 && (
+                    <div style={{ marginBottom: 14, background: `#7a5a8a18`, borderRadius: 10, padding: "12px 14px", border: `1px solid #7a5a8a30` }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 4 }}>Automatisch berekend vanuit jouw lijfrente-rekeningen:</div>
+                      <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 18, color: "#7a5a8a", fontWeight: 600 }}>{eur(eigenPensAutoMaand)}/mnd</div>
+                      <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>Gebaseerd op {eur(lijfrenteTotaalOpStop)} totaal over 20 jaar uitkering</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                        <input type="checkbox" id="eigenOverride" checked={pens.eigenOverride} onChange={e => setPn("eigenOverride", e.target.checked)} />
+                        <label htmlFor="eigenOverride" style={{ fontSize: 12, color: C.muted, cursor: "pointer" }}>Eigen bedrag invullen (overschrijf automatische berekening)</label>
+                      </div>
+                    </div>
+                  )}
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                     <div>
-                      <Lbl info="Maandelijks bedrag dat je later ontvangt uit je eigen pensioenrekening.">Verwacht bedrag</Lbl>
-                      <NumInp value={pens.eigen} onChange={v => setPn("eigen", v)} prefix="€" suffix="/mnd" placeholder="0" />
+                      <Lbl>Verwacht bedrag</Lbl>
+                      <NumInp value={pens.eigenOverride || lijfrenteAccounts.length === 0 ? pens.eigen : eigenPensAutoMaand} onChange={v => { setPn("eigen", v); setPn("eigenOverride", true); }} prefix="€" suffix="/mnd" placeholder="0" style={{ opacity: !pens.eigenOverride && lijfrenteAccounts.length > 0 ? 0.6 : 1 }} />
                     </div>
                     <div>
-                      <Lbl info="Vanaf welke leeftijd is dit geld beschikbaar?">Beschikbaar vanaf</Lbl>
+                      <Lbl info="Vanaf welke leeftijd is dit beschikbaar?">Beschikbaar vanaf</Lbl>
                       <NumInp value={pens.eigenLeeftijd} onChange={v => setPn("eigenLeeftijd", v)} suffix="jaar" placeholder="68" />
                     </div>
                   </div>
-                  {pens.eigenLeeftijd > stopLft && (
-                    <InfoBox type="let_op" style={{ marginTop: 10 }}>Dit geld is pas beschikbaar op {pens.eigenLeeftijd} jaar. De periode daarvoor moet je overbruggen met je eigen vermogen.</InfoBox>
-                  )}
+                  {pens.eigenLeeftijd > stopLft && <InfoBox type="let_op" style={{ marginTop: 10 }}>Dit geld komt pas vrij op {pens.eigenLeeftijd} jaar. De {pens.eigenLeeftijd - stopLft} jaar eerder moet je overbruggen.</InfoBox>}
                 </div>
               )}
             </div>
@@ -844,32 +1101,28 @@ export default function VrijheidsWizard() {
             {/* Jaarruimte */}
             <div style={{ marginTop: 16 }}>
               <Card style={{ background: C.greenPale, border: `1px solid ${C.greenLight}40` }}>
-                <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 17, fontWeight: 600, marginBottom: 8 }}>💡 Jaarruimte — belastingvrij extra sparen voor later</div>
+                <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 17, fontWeight: 600, marginBottom: 8 }}>💡 Belastingvrij extra sparen voor later</div>
                 <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 12 }}>
-                  De overheid staat je toe om een bepaald bedrag per jaar belastingvrij in een pensioenproduct te stoppen. Je betaalt nu minder belasting en later bij het opnemen. Dit heet jaarruimte.
-                  {profiel.werkType === "loondienst" ? " In loondienst is je ruimte afhankelijk van wat je werkgever al voor je opbouwt (factor A)." : " Als zelfstandige mag je 30% van je winst hiervoor gebruiken."}
+                  De overheid laat je jaarlijks een bepaald bedrag belastingvrij opzij zetten voor later. Je betaalt dan minder belasting nú, en pas bij opname. Dit heet jaarruimte.
+                  {profiel.werkType === "loondienst" ? " In loondienst hangt je ruimte af van wat je werkgever al opbouwt." : " Als ZZP'er mag je 30% van je winst gebruiken."}
                 </p>
                 {profiel.werkType === "loondienst" && (
                   <div style={{ marginBottom: 14 }}>
-                    <Lbl info="Factor A staat op je UPO (Uniform Pensioenoverzicht) — het jaarlijkse overzicht dat je werkgever stuurt. Het is de pensioenopbouw in euro's van dit jaar. Heb je geen UPO? Vul 0 in.">Factor A (staat op je UPO van je werkgever)</Lbl>
+                    <Lbl info="Factor A staat op je UPO — het jaarlijkse overzicht dat je werkgever stuurt. Het is de pensioenopbouw in euro's. Heb je geen UPO? Vul 0 in.">Factor A (staat op je UPO)</Lbl>
                     <NumInp value={pens.factorA} onChange={v => setPn("factorA", v)} prefix="€" suffix="/jaar" placeholder="0" />
                   </div>
                 )}
                 <div style={{ background: C.card, borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 13, color: C.muted }}>Jouw ruimte om belastingvrij te sparen voor later</span>
+                  <span style={{ fontSize: 13, color: C.muted }}>Jouw ruimte om belastingvrij te sparen</span>
                   <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 16, color: C.greenLight, fontWeight: 700 }}>{eur(jaarruimteCalc)}/jaar</span>
                 </div>
                 <div style={{ marginTop: 12 }}>
-                  <Lbl info="Hoeveel zet je dit jaar daadwerkelijk in een lijfrente of bankspaarrekening?">Hoe veel gebruik je hier al van?</Lbl>
+                  <Lbl info="Hoeveel zet je dit jaar al in een lijfrente of bankspaarrekening?">Hoeveel gebruik je hier al van?</Lbl>
                   <NumInp value={pens.jaarruimteInleg} onChange={v => setPn("jaarruimteInleg", v)} prefix="€" suffix="/jaar" placeholder="0" />
                 </div>
-                {pens.jaarruimteInleg < jaarruimteCalc && jaarruimteCalc > 0 && (
-                  <InfoBox type="goed" style={{ marginTop: 10 }}>Je laat <strong>{eur(jaarruimteCalc - pens.jaarruimteInleg)}/jaar</strong> liggen. Dit is geld dat je belastingvrij kunt inleggen voor later.</InfoBox>
-                )}
+                {pens.jaarruimteInleg < jaarruimteCalc && jaarruimteCalc > 0 && <InfoBox type="goed" style={{ marginTop: 10 }}>Je laat <strong>{eur(jaarruimteCalc - pens.jaarruimteInleg)}/jaar</strong> onbenut. Dit belastingvoordeel kan je direct inzetten.</InfoBox>}
               </Card>
             </div>
-
-            {aowGat && <div style={{ marginTop: 10 }}><InfoBox type="let_op">Je stopt {jarenGat} jaar vóór je AOW. Je hebt een overbrugging nodig van {eur(maandOpStop * 12 * jarenGat)} in totaal — houd hier rekening mee in je spaargeld.</InfoBox></div>}
 
             <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
               <button onClick={() => setStap(2)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "13px 22px", color: C.muted, fontWeight: 500, fontSize: 14 }}>← Terug</button>
@@ -879,71 +1132,107 @@ export default function VrijheidsWizard() {
         )}
 
         {/* ════════════════════════════════════════
-            STAP 5 — PROGNOSE
+            STAP 5 — VRIJHEIDSPLAN RAPPORT
         ════════════════════════════════════════ */}
         {stap === 4 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
 
-            {/* Header */}
-            <Card accent={doelBereikt ? C.greenLight : C.gold} style={{ background: doelBereikt ? C.greenPale : C.goldPale }}>
+            {/* ── HERO ── */}
+            <div style={{ background: doelBereikt ? `linear-gradient(135deg, ${C.greenPale} 0%, ${C.goldPale} 100%)` : `linear-gradient(135deg, ${C.goldPale} 0%, #fff8f0 100%)`, borderRadius: 18, padding: "28px 32px", border: `1px solid ${doelBereikt ? C.greenLight : C.gold}40` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
                 <div>
-                  <Kop size={28}>{profiel.naam ? `${profiel.naam}, ` : ""}{doelBereikt ? "jouw vrijheid is haalbaar 🎉" : "bijna — een kleine aanpassing maakt het verschil ✦"}</Kop>
-                  <p style={{ fontSize: 14, color: C.muted, marginTop: 6, lineHeight: 1.6, maxWidth: 500 }}>
-                    Op {stopLft} jaar heb je naar verwachting <strong>{eur(vermOpStopM)}</strong>. Je hebt <strong>{eur(benodigdPot)}</strong> nodig om daarna van te leven zonder te werken.
+                  <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.1em", color: C.muted, marginBottom: 8 }}>Jouw vrijheidsplan — {new Date().getFullYear()}</div>
+                  <div style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 34, fontWeight: 700, color: C.text, lineHeight: 1.2 }}>
+                    {profiel.naam ? `${profiel.naam}, ` : ""}
+                    {doelBereikt ? "je vrijheid is haalbaar 🎉" : "een doel dat binnen bereik ligt ✦"}
+                  </div>
+                  <p style={{ fontSize: 15, color: C.muted, marginTop: 10, lineHeight: 1.7, maxWidth: 520 }}>
+                    Op <strong>{stopLft} jaar</strong> wil jij financieel vrij zijn — over <strong>{jarenTotStop} jaar</strong>.
+                    Je verwacht dan <strong>{eur(vermOpStopM)}</strong> te hebben opgebouwd.
+                    Je hebt <strong>{eur(benodigdPot)}</strong> nodig.
+                    {doelBereikt ? ` Dat geeft een overschot van ${eur(verschil)}.` : ` Dat is een verschil van ${eur(Math.abs(verschil))}.`}
                   </p>
                 </div>
                 <div style={{ textAlign: "right" }}>
-                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 40, fontWeight: 500, color: doelBereikt ? C.greenLight : C.gold, lineHeight: 1 }}>{doelBereikt ? "+" : "-"}{eur(Math.abs(verschil))}</div>
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>{doelBereikt ? "overschot" : "tekort"}</div>
+                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 48, fontWeight: 500, color: doelBereikt ? C.greenLight : C.gold, lineHeight: 1 }}>{doelBereikt ? "+" : "-"}{eur(Math.abs(verschil))}</div>
+                  <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>{doelBereikt ? "overschot" : "tekort"}</div>
+                  {doelBereikt && pessOk && <div style={{ marginTop: 8, fontSize: 12, color: C.greenLight, fontWeight: 600 }}>✓ Ook in slechte tijden haalbaar</div>}
+                  {doelBereikt && !pessOk && <div style={{ marginTop: 8, fontSize: 12, color: C.gold, fontWeight: 600 }}>⚡ Alleen bij goede rendementen</div>}
                 </div>
               </div>
-            </Card>
 
-            {/* Metrics simpele taal */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
-              <Metric label="Bedrag dat je nodig hebt" value={eur(benodigdPot)} accent={C.gold} sub="Om de rest van je leven van te leven" />
-              <Metric label="Wat je opbouwt" value={eur(vermOpStopM)} accent={doelBereikt ? C.greenLight : C.red} sub={`Meest waarschijnlijke scenario`} />
-              <Metric label="Jouw maandbudget" value={`${eur(maandOpStop)}/mnd`} accent={C.gold} sub={hypotheekVrij ? "Hypotheekvrij ✓" : "Op vrije leeftijd"} />
+              {/* Voortgangsbalk */}
+              <div style={{ marginTop: 24 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 6 }}>
+                  <span>Nu: {eur(totaalVerm)}</span>
+                  <span>Doel: {eur(benodigdPot)}</span>
+                </div>
+                <div style={{ height: 12, background: C.surface, borderRadius: 6, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.min(100, Math.max(5, (totaalVerm / benodigdPot) * 100))}%`, height: "100%", background: `linear-gradient(90deg, ${C.gold}, ${C.greenLight})`, borderRadius: 6, transition: "width 0.5s" }} />
+                </div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{Math.round((totaalVerm / benodigdPot) * 100)}% van je doel bereikt</div>
+              </div>
             </div>
 
-            {/* Maandelijks inkomen breakdown */}
+            {/* ── KEY METRICS ── */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
+              {[
+                { icon: "💰", lbl: "Doel — wat je nodig hebt", val: eur(benodigdPot), sub: "Om voor altijd van te leven", clr: C.gold },
+                { icon: "📈", lbl: "Wat je opbouwt", val: eur(vermOpStopM), sub: "Meest waarschijnlijk scenario", clr: doelBereikt ? C.greenLight : C.red },
+                { icon: "📅", lbl: "Maandbudget", val: `${eur(maandOpStop)}/mnd`, sub: hypotheekVrij ? "Hypotheekvrij ✓" : `Incl. ${eur(hypoOpStop * partnerAandeel)}/mnd hypotheek`, clr: C.gold },
+                { icon: "🏛️", lbl: "Passief inkomen later", val: `${eur(totaalPassief)}/mnd`, sub: `AOW${pens.heeftWerkgever?" + pensioen":""}${pens.heeftEigen?" + eigen":""}`, clr: C.greenLight },
+              ].map((m, i) => (
+                <div key={i} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 20, marginBottom: 8 }}>{m.icon}</div>
+                  <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>{m.lbl}</div>
+                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 17, color: m.clr, fontWeight: 700 }}>{m.val}</div>
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{m.sub}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* ── MAANDINKOMEN BREAKDOWN ── */}
             <Card>
-              <Kop size={18} sub="Waar komt jouw inkomen straks vandaan?">Jouw maandelijks inkomen op vrije leeftijd</Kop>
+              <Kop size={18} sub="Hoeveel heb je per maand en waar komt het vandaan?">Jouw maandinkomen op vrije leeftijd</Kop>
               <div style={{ marginTop: 16 }}>
                 {[
-                  { lbl: "Uit je opgebouwde vermogen", val: inkomenUitPot, sub: `${(FIRE_PCT*100).toFixed(1)}% van ${eur(vermOpStopM)} per jaar`, clr: C.greenLight, show: vermOpStopM > 0 },
-                  { lbl: `AOW (${aowGat ? `pas vanaf ${aow.leeftijd} jaar` : `vanaf ${aow.leeftijd} jaar`})`, val: aowBij, sub: profiel.partner ? "Samenwonend tarief" : "Alleenstaand tarief", clr: C.gold, show: true },
-                  { lbl: `Werkgeverspensioen (${pens.heeftWerkgever ? `vanaf ${pens.werkgeverLeeftijd} jaar` : "niet ingevuld"})`, val: pensBij, sub: "Via je werkgever", clr: "#7a5a8a", show: pens.heeftWerkgever },
-                  { lbl: `Eigen pensioen (${pens.heeftEigen ? `vanaf ${pens.eigenLeeftijd} jaar` : "niet ingevuld"})`, val: eigenPensBij, sub: "Zelf opgebouwd", clr: "#4a90d9", show: pens.heeftEigen },
-                ].filter(r => r.show && r.val > 0).map((r, i) => (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: `1px solid ${C.border}` }}>
-                    <div>
+                  { icon: "📊", lbl: "Uit je opgebouwde vermogen", val: inkomenUitPot, sub: `3,5% van ${eur(vermOpStopM)} per jaar, maandelijks opnemen`, clr: C.greenLight, show: vermOpStopM > 0 },
+                  { icon: "🏛️", lbl: `AOW${aowGat ? ` — pas vanaf ${aow.leeftijd} jaar` : ""}`, val: aowBij, sub: profiel.partner ? "Samenwonend tarief" : "Alleenstaand tarief", clr: C.gold, show: true },
+                  { icon: "🏢", lbl: `Werkgeverspensioen${pens.werkgeverLeeftijd > stopLft ? ` — pas vanaf ${pens.werkgeverLeeftijd} jaar` : ""}`, val: pensBij, sub: "Via je werkgever", clr: "#7a5a8a", show: pens.heeftWerkgever },
+                  { icon: "🔒", lbl: `Eigen pensioen${pens.eigenLeeftijd > stopLft ? ` — pas vanaf ${pens.eigenLeeftijd} jaar` : ""}`, val: eigenPensBij, sub: "Zelf opgebouwd", clr: "#4a90d9", show: pens.heeftEigen },
+                ].filter(r => r.show).map((r, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: `1px solid ${C.border}` }}>
+                    <span style={{ fontSize: 20, flexShrink: 0 }}>{r.icon}</span>
+                    <div style={{ flex: 1 }}>
                       <div style={{ fontSize: 14, color: C.text, fontWeight: 500 }}>{r.lbl}</div>
-                      <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{r.sub}</div>
+                      <div style={{ fontSize: 12, color: C.muted, marginTop: 1 }}>{r.sub}</div>
                     </div>
-                    <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 18, color: r.clr, fontWeight: 600, whiteSpace: "nowrap" }}>{eur(r.val)}/mnd</div>
+                    <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 18, color: r.val > 0 ? r.clr : C.dim, fontWeight: 600, whiteSpace: "nowrap" }}>
+                      {r.val > 0 ? `${eur(r.val)}/mnd` : "—"}
+                    </div>
                   </div>
                 ))}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 12 }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Totaal maandinkomen</div>
-                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 22, color: totaalMaandInkomen >= maandOpStop ? C.greenLight : C.red, fontWeight: 700 }}>{eur(totaalMaandInkomen)}/mnd</div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 14, marginTop: 4 }}>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: C.text }}>Totaal maandinkomen</div>
+                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 24, color: totaalMaandInkomen >= maandOpStop ? C.greenLight : C.red, fontWeight: 700 }}>{eur(totaalMaandInkomen)}/mnd</div>
                 </div>
-                {totaalMaandInkomen >= maandOpStop
-                  ? <InfoBox type="goed" style={{ marginTop: 10 }}>Je maandinkomen ({eur(totaalMaandInkomen)}) is hoger dan je maandbudget ({eur(maandOpStop)}). Je hebt {eur(totaalMaandInkomen - maandOpStop)}/mnd over.</InfoBox>
-                  : <InfoBox type="let_op" style={{ marginTop: 10 }}>Je maandinkomen ({eur(totaalMaandInkomen)}) dekt niet je volledige budget ({eur(maandOpStop)}). Verschil: {eur(maandOpStop - totaalMaandInkomen)}/mnd.</InfoBox>}
+                <div style={{ marginTop: 8, padding: "12px 16px", borderRadius: 10, background: totaalMaandInkomen >= maandOpStop ? C.greenPale : `${C.red}10`, border: `1px solid ${totaalMaandInkomen >= maandOpStop ? C.greenLight : C.red}30` }}>
+                  {totaalMaandInkomen >= maandOpStop
+                    ? <span style={{ fontSize: 13, color: C.greenLight, fontWeight: 600 }}>✓ Je maandinkomen ({eur(totaalMaandInkomen)}) dekt je budget ({eur(maandOpStop)}) — {eur(totaalMaandInkomen - maandOpStop)}/mnd over.</span>
+                    : <span style={{ fontSize: 13, color: C.red, fontWeight: 600 }}>Je budget ({eur(maandOpStop)}/mnd) is hoger dan je inkomen ({eur(totaalMaandInkomen)}/mnd). Verschil: {eur(maandOpStop - totaalMaandInkomen)}/mnd.</span>}
+                </div>
               </div>
             </Card>
 
-            {/* Drie-scenario grafiek */}
+            {/* ── DRIE SCENARIO GRAFIEK ── */}
             {grafData.length > 0 && (
               <Card>
-                <Kop size={18} sub="Hoe je vermogen groeit richting jouw vrije leeftijd — in drie scenario's">Vermogensgroei</Kop>
+                <Kop size={18} sub="Drie mogelijke uitkomsten — afhankelijk van hoe jouw beleggingen presteren">Vermogensgroei</Kop>
                 <div style={{ display: "flex", gap: 10, marginTop: 10, marginBottom: 4, flexWrap: "wrap" }}>
                   {[
-                    { lbl: "😟 Pessimistisch", val: eur(vermOpStopP), clr: C.red, ok: pessOk },
-                    { lbl: "📊 Waarschijnlijk", val: eur(vermOpStopM), clr: C.gold, ok: doelBereikt },
-                    { lbl: "🚀 Optimistisch",  val: eur(vermOpStopO), clr: C.greenLight, ok: true },
+                    { lbl: "😟 Tegenvaller", val: eur(vermOpStopP), clr: C.red, ok: pessOk },
+                    { lbl: "📊 Verwacht",    val: eur(vermOpStopM), clr: C.gold, ok: doelBereikt },
+                    { lbl: "🚀 Meevaller",   val: eur(vermOpStopO), clr: C.greenLight, ok: true },
                   ].map((s,i) => (
                     <div key={i} style={{ background: C.surface, borderRadius: 10, padding: "10px 16px", border: `1px solid ${C.border}` }}>
                       <div style={{ fontSize: 11, color: s.clr, fontWeight: 600, marginBottom: 3 }}>{s.lbl}</div>
@@ -956,73 +1245,103 @@ export default function VrijheidsWizard() {
                   <ResponsiveContainer>
                     <AreaChart data={grafData}>
                       <defs>
-                        <linearGradient id="vgOpt"  x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.greenLight} stopOpacity={0.2}/><stop offset="95%" stopColor={C.greenLight} stopOpacity={0}/></linearGradient>
-                        <linearGradient id="vgMid"  x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.gold}       stopOpacity={0.2}/><stop offset="95%" stopColor={C.gold}       stopOpacity={0}/></linearGradient>
-                        <linearGradient id="vgPess" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.red}        stopOpacity={0.15}/><stop offset="95%" stopColor={C.red}       stopOpacity={0}/></linearGradient>
+                        <linearGradient id="r_opt"  x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.greenLight} stopOpacity={0.2}/><stop offset="95%" stopColor={C.greenLight} stopOpacity={0}/></linearGradient>
+                        <linearGradient id="r_mid"  x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.gold}       stopOpacity={0.2}/><stop offset="95%" stopColor={C.gold}       stopOpacity={0}/></linearGradient>
+                        <linearGradient id="r_pes"  x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.red}        stopOpacity={0.15}/><stop offset="95%" stopColor={C.red}       stopOpacity={0}/></linearGradient>
                       </defs>
                       <CartesianGrid stroke={C.border} strokeDasharray="3 3" vertical={false} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} />
                       <YAxis tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} tickFormatter={v => v >= 1000000 ? `€${(v/1000000).toFixed(1)}M` : `€${(v/1000).toFixed(0)}k`} />
                       <Tooltip content={<ScenTip />} />
                       <ReferenceLine y={benodigdPot} stroke={C.gold} strokeDasharray="6 3" label={{ value: "Doel", fill: C.gold, fontSize: 11, position: "insideTopRight" }} />
-                      <Area type="monotone" dataKey="opt"      name="🚀 Optimistisch"  stroke={C.greenLight} fill="url(#vgOpt)"  strokeWidth={2}   dot={false} />
-                      <Area type="monotone" dataKey="vermogen" name="📊 Waarschijnlijk" stroke={C.gold}       fill="url(#vgMid)"  strokeWidth={2.5} dot={false} />
-                      <Area type="monotone" dataKey="pess"     name="😟 Pessimistisch" stroke={C.red}        fill="url(#vgPess)" strokeWidth={2}   dot={false} strokeDasharray="4 2" />
+                      <Area type="monotone" dataKey="opt"      name="🚀 Meevaller"  stroke={C.greenLight} fill="url(#r_opt)" strokeWidth={2}   dot={false} />
+                      <Area type="monotone" dataKey="vermogen" name="📊 Verwacht"   stroke={C.gold}       fill="url(#r_mid)" strokeWidth={2.5} dot={false} />
+                      <Area type="monotone" dataKey="pess"     name="😟 Tegenvaller" stroke={C.red}       fill="url(#r_pes)" strokeWidth={2}   dot={false} strokeDasharray="4 2" />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
               </Card>
             )}
 
-            {/* Hypotheek aflossing */}
+            {/* ── HYPOTHEEK GRAFIEK ── */}
             {aflossingsData.length > 0 && (
               <Card>
-                <Kop size={18} sub="Hoe je hypotheekschuld daalt per jaar">Hypotheekaflossing</Kop>
-                <div style={{ height: 200, marginTop: 16 }}>
+                <Kop size={18} sub="Hoe je schuld daalt — en wanneer je hypotheekvrij bent">Hypotheekaflossing</Kop>
+                <div style={{ height: 200, marginTop: 12 }}>
                   <ResponsiveContainer>
-                    <AreaChart data={aflossingsData.map(d => ({ ...d, label: `${d.leeftijd}j` }))}>
-                      <defs><linearGradient id="gHypo" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.red} stopOpacity={0.25}/><stop offset="95%" stopColor={C.red} stopOpacity={0}/></linearGradient></defs>
+                    <AreaChart data={aflossingsData}>
+                      <defs>
+                        <linearGradient id="gH1" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.red} stopOpacity={0.2}/><stop offset="95%" stopColor={C.red} stopOpacity={0}/></linearGradient>
+                        <linearGradient id="gH2" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.greenLight} stopOpacity={0.15}/><stop offset="95%" stopColor={C.greenLight} stopOpacity={0}/></linearGradient>
+                      </defs>
                       <CartesianGrid stroke={C.border} strokeDasharray="3 3" vertical={false} />
                       <XAxis dataKey="label" tick={{ fontSize: 10, fill: C.muted }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
                       <YAxis tick={{ fontSize: 10, fill: C.muted }} tickLine={false} axisLine={false} tickFormatter={v => `€${(v/1000).toFixed(0)}k`} />
-                      <Tooltip formatter={v => [eur(v), "Restschuld"]} />
-                      <Area type="monotone" dataKey="restschuld" name="Restschuld" stroke={C.red} fill="url(#gHypo)" strokeWidth={2} dot={false} />
+                      <Tooltip formatter={(v, n) => [eur(v), n]} />
+                      <Area type="monotone" dataKey="restschuld"   name="Zonder extra aflossing" stroke={C.red}        fill="url(#gH1)" strokeWidth={2} dot={false} />
+                      {totaalExtraAfl > 0 && <Area type="monotone" dataKey="metAflossing" name={`Met ${eur(totaalExtraAfl)} extra aflossing`} stroke={C.greenLight} fill="url(#gH2)" strokeWidth={2} dot={false} />}
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
               </Card>
             )}
 
-            {/* Actieplan */}
-            <Card accent={C.gold}>
-              <Kop size={18} sub="Concrete stappen die je nu al kunt zetten">Jouw actieplan</Kop>
-              <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 10 }}>
-                {[
-                  accounts.length === 0 && { icon: "💼", title: "Voeg je rekeningen toe", text: "Ga terug naar stap 3 en voeg je spaargeld en beleggingen toe voor een nauwkeurige prognose." },
-                  pens.jaarruimteInleg < jaarruimteCalc && jaarruimteCalc > 0 && { icon: "💰", title: "Benut je belastingvrije ruimte", text: `Je kunt nog ${eur(jaarruimteCalc - pens.jaarruimteInleg)}/jaar extra belastingvrij inleggen voor later.` },
-                  aowGat && { icon: "⏳", title: `Zorg voor overbrugging van ${jarenGat} jaar`, text: `Je ontvangt pas AOW op ${aow.leeftijd}. Zorg dat je ${eur(maandOpStop * 12 * jarenGat)} apart hebt staan hiervoor.` },
-                  !aow.zeker && { icon: "📋", title: "Houd wijzigingen in de AOW-leeftijd bij", text: "Je AOW-leeftijd is nog niet officieel. Check jaarlijks rijksoverheid.nl." },
-                  hypotheekVrij && { icon: "🏠", title: "Je bent hypotheekvrij op vrije leeftijd", text: `Je betaalt geen hypotheek meer — dat scheelt ${eur(hypoMaandNu * partnerAandeel)}/mnd.` },
-                  kinderenWegOpStop.length > 0 && { icon: "👶", title: "Kinderkosten vallen weg", text: `${kinderenWegOpStop.length} ${kinderenWegOpStop.length === 1 ? "kind is" : "kinderen zijn"} op je vrije leeftijd al het huis uit. Dat scheelt ${eur(kinderKostenWeg * partnerAandeel)}/mnd.` },
-                  !doelBereikt && !pessOk && { icon: "📈", title: "Verhoog je maandelijkse inleg", text: `Een hogere inleg of iets langer werken maakt het verschil. Met ${eur(Math.abs(verschil / (jarenTotStop * 12) * 1.2))} extra per maand kom je er.` },
-                  doelBereikt && !pessOk && { icon: "⚡", title: "Doel haalbaar, maar zorg voor een buffer", text: "In het slechtste scenario kom je tekort. Overweeg iets extra te sparen als veiligheidsnet." },
-                  doelBereikt && pessOk && { icon: "✦", title: "Je bent op koers in alle scenario's", text: `Blijf consequent inleggen. Over ${jarenTotStop} jaar pluk je de vruchten.` },
-                ].filter(Boolean).map((a, i) => (
-                  <div key={i} style={{ display: "flex", gap: 14, padding: 14, background: C.surface, borderRadius: 12, border: `1px solid ${C.border}` }}>
-                    <span style={{ fontSize: 22, flexShrink: 0 }}>{a.icon}</span>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 3 }}>{a.title}</div>
-                      <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{a.text}</p>
+            {/* ── WAT KAN JE DOEN? ── */}
+            <Card accent={doelBereikt ? C.greenLight : C.gold}>
+              <Kop size={18} sub="Concrete opties om je plan te verbeteren of te versnellen">Wat kun je doen?</Kop>
+              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+
+                {!doelBereikt && (
+                  <div style={{ background: `${C.red}08`, border: `1px solid ${C.red}30`, borderRadius: 12, padding: "16px 18px" }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: C.red, marginBottom: 10 }}>🎯 Jouw tekort overbruggen</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                      {[
+                        { lbl: "Meer inleggen", val: `+${eur(Math.max(0, extraNodig))}/mnd`, sub: "extra inleg volstaat", icon: "💸" },
+                        { lbl: "Iets langer werken", val: `+${Math.ceil(Math.abs(verschil) / (jaarOpStop / 12))} jaar`, sub: "werkjaren extra nodig", icon: "📅" },
+                        { lbl: "Minder uitgeven", val: `-${eur(Math.abs(verschil) * FIRE_PCT / 12)}/mnd`, sub: "minder nodig op vrije leeftijd", icon: "✂️" },
+                      ].map((opt, i) => (
+                        <div key={i} style={{ background: C.card, borderRadius: 10, padding: "12px 14px", border: `1px solid ${C.border}` }}>
+                          <div style={{ fontSize: 20, marginBottom: 6 }}>{opt.icon}</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{opt.lbl}</div>
+                          <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 16, color: C.gold, fontWeight: 700, marginTop: 4 }}>{opt.val}</div>
+                          <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{opt.sub}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
+                )}
+
+                {[
+                  accounts.length === 0 && { icon: "💼", prio: "hoog", title: "Voeg je rekeningen toe", text: "Ga terug naar stap 3. Zonder gegevens zijn alle berekeningen een gok." },
+                  pens.jaarruimteInleg < jaarruimteCalc && jaarruimteCalc > 0 && { icon: "💰", prio: "hoog", title: "Benut je belastingvoordeel", text: `Je kunt ${eur(jaarruimteCalc - pens.jaarruimteInleg)}/jaar extra belastingvrij sparen voor later. Dat is direct belastingteruggave.` },
+                  aowGat && { icon: "⏳", prio: "hoog", title: `Overbrugging van ${jarenGat} jaar nodig`, text: `Je ontvangt pas AOW op ${aow.leeftijd}. Je hebt ${eur(maandOpStop * 12 * jarenGat)} nodig als overbrugging.` },
+                  !aow.zeker && { icon: "📋", prio: "laag", title: "Houd de AOW-leeftijd in de gaten", text: "Jouw AOW-leeftijd is nog niet officieel vastgesteld. Check jaarlijks rijksoverheid.nl." },
+                  hypotheekVrij && { icon: "🎉", prio: "goed", title: "Hypotheekvrij op vrije leeftijd", text: `Je betaalt geen hypotheek meer — dat scheelt ${eur(hypoOpStopOrig * partnerAandeel)}/mnd.` },
+                  kinderenWegOpStop.length > 0 && { icon: "👶", prio: "goed", title: "Kinderkosten vallen weg", text: `${kinderenWegOpStop.length} kind${kinderenWegOpStop.length > 1 ? "eren zijn" : " is"} al het huis uit op vrije leeftijd. Scheelt ${eur(kinderKostenWeg * partnerAandeel)}/mnd.` },
+                  doelBereikt && pessOk && { icon: "✦", prio: "goed", title: "Je bent op koers in alle scenario's", text: `Blijf consequent inleggen. Over ${jarenTotStop} jaar ben je er.` },
+                  doelBereikt && !pessOk && { icon: "⚡", prio: "laag", title: "Bouw een buffer in voor tegenslagen", text: "In het slechtste scenario kom je net tekort. Een kleine extra inleg zorgt voor een veiliger plan." },
+                  noodfondsPct < 100 && { icon: "🛟", prio: "hoog", title: "Vul je noodfonds aan", text: `Je noodfonds is ${noodfondsPct}% gevuld. Bouw eerst ${eur(cashNodig - spaartotaal)} op als vangnet.` },
+                  totaalSchulden > 0 && { icon: "💳", prio: "hoog", title: "Los schulden af", text: `Je hebt ${eur(totaalSchulden)} aan schulden. Hoge rente schulden aflossen geeft gegarandeerd rendement.` },
+                ].filter(Boolean).map((a, i) => {
+                  const kleur = a.prio === "hoog" ? C.red : a.prio === "goed" ? C.greenLight : C.gold;
+                  return (
+                    <div key={i} style={{ display: "flex", gap: 14, padding: "14px 16px", background: C.surface, borderRadius: 12, border: `1px solid ${kleur}20` }}>
+                      <span style={{ fontSize: 22, flexShrink: 0 }}>{a.icon}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{a.title}</div>
+                          <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 6, background: `${kleur}18`, color: kleur, fontWeight: 600, textTransform: "uppercase" }}>{a.prio}</span>
+                        </div>
+                        <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{a.text}</p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </Card>
 
             <div style={{ background: `${C.gold}10`, border: `1px solid ${C.gold}30`, borderRadius: 12, padding: "12px 16px" }}>
-              <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
-                ⚠️ <strong>Dit is een indicatie, geen financieel advies.</strong> De berekeningen gaan uit van de door jou ingevulde bedragen, 2,5% prijsstijging per jaar en de huidige belastingregels. AOW-leeftijden en regels kunnen wijzigen. Alle gegevens blijven privé op jouw apparaat.
-              </p>
+              <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.7 }}>⚠️ <strong>Indicatie, geen financieel advies.</strong> Berekeningen gaan uit van ingevoerde bedragen, 2,5%/jaar prijsstijging en huidige belastingregels. Raadpleeg een financieel adviseur voor persoonlijk advies.</p>
             </div>
             <button onClick={() => setStap(3)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "13px 22px", color: C.muted, fontWeight: 500, fontSize: 14, width: "fit-content" }}>← Aanpassen</button>
           </div>
