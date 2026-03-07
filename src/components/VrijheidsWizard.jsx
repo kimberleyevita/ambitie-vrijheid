@@ -99,22 +99,27 @@ function ScenTip({ active, payload, label }) {
 }
 
 function PresetKnoppen({ presets, value, onChange, label }) {
-  const actief = presets.find(p => p.waarde === value && p.waarde !== null);
+  const heeftVastePreset = presets.some(p => p.waarde !== null && p.waarde === value);
+  const zelfinvullenActief = !heeftVastePreset;
   return (
     <div>
       {label && <Lbl>{label}</Lbl>}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
         {presets.map((p, i) => {
-          const isActief = p.waarde !== null ? p.waarde === value : !presets.find(x => x.waarde !== null && x.waarde === value);
+          const isActief = p.waarde !== null ? p.waarde === value : zelfinvullenActief;
           return (
-            <button key={i} onClick={() => p.waarde !== null && onChange(p.waarde)} style={{ padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${isActief ? C.gold : C.border}`, background: isActief ? C.goldPale : C.surface, color: isActief ? C.gold : C.muted, fontSize: 12, fontWeight: isActief ? 600 : 400 }}>
+            <button key={i}
+              onClick={() => { if (p.waarde !== null) onChange(p.waarde); else onChange(0); }}
+              style={{ padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${isActief ? C.gold : C.border}`, background: isActief ? C.goldPale : C.surface, color: isActief ? C.gold : C.muted, fontSize: 12, fontWeight: isActief ? 600 : 400, cursor: "pointer" }}>
               {p.label}
               {p.sub && <div style={{ fontSize: 10, color: isActief ? C.gold : C.dim }}>{p.sub}</div>}
             </button>
           );
         })}
       </div>
-      {(!actief || value === 0) && <NumInp value={value} onChange={onChange} prefix="€" suffix="/mnd" placeholder="eigen bedrag" />}
+      {zelfinvullenActief && (
+        <NumInp value={value} onChange={onChange} prefix="€" suffix="/mnd" placeholder="Vul jouw bedrag in" />
+      )}
     </div>
   );
 }
@@ -144,7 +149,8 @@ export default function VrijheidsWizard() {
 
   // ── Vermogen ──
   const [accounts, setAccounts]     = useState([]);
-  const [schulden, setSchulden]     = useState([]); // { id, label, bedrag, rente, maandlast }
+  const [schulden, setSchulden]     = useState([]); // { id, label, bedrag, rente, maandlast, looptijdJaar, startjaar }
+  const [passiefInkomens, setPasInkomens] = useState([]); // { id, label, type, maand, groeiPct }
 
   // ── Pensioen ──
   const [pens, setPens] = useState({
@@ -270,7 +276,8 @@ export default function VrijheidsWizard() {
   const aowBij        = aowGat ? 0 : aowMaand;
   const pensBij       = (pens.heeftWerkgever && stopLft >= pens.werkgeverLeeftijd) ? pens.werkgever : 0;
   const eigenPensBij  = (pens.heeftEigen && stopLft >= pens.eigenLeeftijd) ? (pens.eigenOverride ? pens.eigen : eigenPensAutoMaand) : 0;
-  const totaalPassief = aowBij + pensBij + eigenPensBij;
+  const totaalPasInkomenMaand = passiefInkomens.reduce((s, x) => s + (x.maand || 0), 0);
+  const totaalPassief = aowBij + pensBij + eigenPensBij + totaalPasInkomenMaand;
 
   const benodigdPot   = Math.max(0, jaarOpStop - totaalPassief * 12) / FIRE_PCT;
 
@@ -301,6 +308,12 @@ export default function VrijheidsWizard() {
   const extraNodig = !doelBereikt && jarenTotStop > 0
     ? Math.ceil((benodigdPot - totaalVerm * Math.pow(1.06, jarenTotStop)) / ((Math.pow(1.06, jarenTotStop) - 1) / (0.06 / 12)) / 12)
     : 0;
+  // Max realistic extra werkjaren = stop t/m 67 jaar (AOW-leeftijd max)
+  const maxExtraWerkjaren = Math.max(0, 67 - stopLft);
+  // How many extra years of saving would close the gap
+  const extraWerkjarenRauw = verschil < 0 && jaarOpStop > 0 ? Math.ceil(Math.abs(verschil) / (totaalInleg * 12 + jaarOpStop * 0.02)) : 0;
+  const extraWerkjaren = Math.min(extraWerkjarenRauw, maxExtraWerkjaren);
+  const langerWerkenHaalbaar = maxExtraWerkjaren > 0;
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   const setL  = (k, v) => setLs(p => ({ ...p, [k]: v }));
@@ -326,7 +339,7 @@ export default function VrijheidsWizard() {
 
   function addAccount(catId) {
     const cat  = ACCOUNT_CATS.find(c => c.id === catId);
-    const rend = catId === "sparen" ? spaarrente : (cat?.rendMidden || 0.05);
+    const rend = catId === "sparen" ? spaarrente : catId === "cash" ? 0 : (cat?.rendMidden || 0.05);
     const id   = Date.now();
     setAccounts(p => [...p, { id, label: cat?.label || "Rekening", catId, waarde: 0, inlegMnd: 0, rendement: rend }]);
     setTimeout(() => {
@@ -338,11 +351,21 @@ export default function VrijheidsWizard() {
 
   function addSchuld() {
     const id = Date.now();
-    setSchulden(p => [...p, { id, label: "Schuld", bedrag: 0, rente: 0, maandlast: 0 }]);
+    setSchulden(p => [...p, { id, label: "Lening / schuld", bedrag: 0, rente: 0, maandlast: 0, looptijdJaar: 0, startjaar: 2020 }]);
     setTimeout(() => { accountRefs.current["schuld_" + id]?.scrollIntoView({ behavior: "smooth", block: "center" }); }, 80);
   }
   const delSchuld = (id) => setSchulden(p => p.filter(s => s.id !== id));
   const updSchuld = (id, k, v) => setSchulden(p => p.map(s => s.id === id ? { ...s, [k]: v } : s));
+
+  function addPasInkomen(type) {
+    const labels = { huur: "Huurinkomsten vastgoed", dividend: "Dividend aandelen", rente: "Rente-inkomsten", overig: "Overig passief inkomen" };
+    const id = Date.now();
+    setPasInkomens(p => [...p, { id, label: labels[type] || "Passief inkomen", type, maand: 0, groeiPct: type === "huur" ? 2 : type === "dividend" ? 3 : 1 }]);
+    setTimeout(() => { accountRefs.current["pas_" + id]?.scrollIntoView({ behavior: "smooth", block: "center" }); }, 80);
+  }
+  const delPasInkomen = (id) => setPasInkomens(p => p.filter(x => x.id !== id));
+  const updPasInkomen = (id, k, v) => setPasInkomens(p => p.map(x => x.id === id ? { ...x, [k]: v } : x));
+  const totaalPasInkomen = passiefInkomens.reduce((s, x) => s + (x.maand || 0), 0);
 
   // Noodfonds peil
   const spaartotaal   = accounts.filter(a => a.catId === "sparen" || a.catId === "cash").reduce((s, a) => s + (a.waarde || 0), 0);
@@ -873,69 +896,138 @@ export default function VrijheidsWizard() {
                         <NumInp value={acc.inlegMnd} onChange={v => updAccount(acc.id, "inlegMnd", v)} prefix="€" suffix="/mnd" placeholder="0" />
                       </div>
                       <div>
-                        <Lbl info={acc.catId === "sparen" ? "Rente die de bank betaalt per jaar." : `Verwacht jaarlijks groeipercentage. Vuistregel: ${((cat?.rendBand?.[0]||0)*100).toFixed(0)}–${((cat?.rendBand?.[1]||0.1)*100).toFixed(0)}%.`}>Groei per jaar (%)</Lbl>
-                        <NumInp value={+(acc.rendement * 100).toFixed(1)} onChange={v => updAccount(acc.id, "rendement", v / 100)} suffix="%" placeholder="5" />
-                        {cat?.rendBand && <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>Vuistregel: {(cat.rendBand[0]*100).toFixed(0)}–{(cat.rendBand[1]*100).toFixed(0)}%/jr</div>}
+                        <Lbl info={acc.catId === "sparen" ? "Rente die de bank betaalt per jaar." : acc.catId === "cash" ? "Contant geld groeit niet — rendement is 0%." : `Verwacht jaarlijks groeipercentage. Vuistregel: ${((cat?.rendBand?.[0]||0)*100).toFixed(0)}–${((cat?.rendBand?.[1]||0.1)*100).toFixed(0)}%.`}>Groei per jaar (%)</Lbl>
+                        {acc.catId === "cash"
+                          ? <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", fontSize: 13, color: C.dim, fontFamily: "'DM Mono',monospace" }}>0% — geen rendement</div>
+                          : <NumInp value={+(acc.rendement * 100).toFixed(1)} onChange={v => updAccount(acc.id, "rendement", v / 100)} suffix="%" placeholder="5" />
+                        }
+                        {cat?.rendBand && acc.catId !== "cash" && <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>Vuistregel: {(cat.rendBand[0]*100).toFixed(0)}–{(cat.rendBand[1]*100).toFixed(0)}%/jr</div>}
                       </div>
                     </div>
 
-                    {/* Compounding visualisatie */}
-                    {waardeBij > 0 && (
-                      <div style={{ marginTop: 12, background: `${cat?.kleur || C.gold}08`, borderRadius: 10, padding: "12px 16px", border: `1px solid ${cat?.kleur || C.gold}20` }}>
-                        <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Op vrije leeftijd ({stopLft} jaar) — effect van rente-op-rente:</div>
-                        <div style={{ display: "flex", gap: 4, height: 40, alignItems: "flex-end", marginBottom: 6 }}>
-                          {[
-                            { lbl: "Huidig saldo", val: acc.waarde || 0, kleur: cat?.kleur || C.gold, opacity: 0.4 },
-                            { lbl: "Ingelegd", val: ingelegd, kleur: cat?.kleur || C.gold, opacity: 0.65 },
-                            { lbl: "Groei (rente)", val: Math.max(0, groei), kleur: cat?.kleur || C.gold, opacity: 1.0 },
-                          ].map((bar, i) => (
-                            <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                              <div style={{ width: "100%", background: bar.kleur, opacity: bar.opacity, borderRadius: 4, height: `${waardeBij > 0 ? Math.max(8, (bar.val / waardeBij) * 40) : 8}px` }} />
-                              <div style={{ fontSize: 10, color: C.muted, textAlign: "center", lineHeight: 1.3 }}>{bar.lbl}</div>
-                              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: cat?.kleur || C.gold, fontWeight: 600 }}>{eur(bar.val)}</div>
-                            </div>
-                          ))}
-                          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                            <div style={{ width: "100%", background: cat?.kleur || C.gold, borderRadius: 4, height: "40px" }} />
-                            <div style={{ fontSize: 10, color: C.muted, textAlign: "center", lineHeight: 1.3 }}>Totaal</div>
-                            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: cat?.kleur || C.gold, fontWeight: 700 }}>{eur(waardeBij)}</div>
+                    {/* Compounding visualisatie - fixed layout */}
+                    {waardeBij > 0 && (() => {
+                      const bars = [
+                        { lbl: "Huidig saldo", val: acc.waarde || 0, opacity: 0.4 },
+                        { lbl: "Extra inleg", val: Math.max(0, ingelegd), opacity: 0.65 },
+                        { lbl: "Groei", val: Math.max(0, groei), opacity: 1.0 },
+                        { lbl: "Totaal", val: waardeBij, opacity: 1.0, isTotal: true },
+                      ];
+                      const maxVal = waardeBij;
+                      const kleur = cat?.kleur || C.gold;
+                      return (
+                        <div style={{ marginTop: 12, background: `${kleur}08`, borderRadius: 10, padding: "14px 16px", border: `1px solid ${kleur}20` }}>
+                          <div style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>
+                            Op vrije leeftijd ({stopLft} jaar) — effect van rente-op-rente:
+                          </div>
+                          <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                            {bars.map((bar, i) => {
+                              const heightPct = maxVal > 0 ? Math.max(8, (bar.val / maxVal) * 80) : 8;
+                              return (
+                                <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: kleur, fontWeight: 700, textAlign: "center", whiteSpace: "nowrap" }}>{eur(bar.val)}</div>
+                                  <div style={{ width: "100%", background: bar.isTotal ? kleur : kleur, opacity: bar.isTotal ? 1 : bar.opacity, borderRadius: "4px 4px 0 0", height: `${heightPct}px`, border: bar.isTotal ? `2px solid ${kleur}` : "none" }} />
+                                  <div style={{ fontSize: 10, color: C.muted, textAlign: "center", lineHeight: 1.3 }}>{bar.lbl}</div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div style={{ marginTop: 8, fontSize: 11, color: kleur }}>
+                            Rente-op-rente effect: <strong>{eur(Math.max(0, groei))}</strong> extra groei bij {(acc.rendement * 100).toFixed(1)}%/jr over {jarenTotStop} jaar.
                           </div>
                         </div>
-                        <div style={{ fontSize: 11, color: cat?.kleur || C.gold }}>
-                          Jouw geld werkt voor je: <strong>{eur(Math.max(0,groei))}</strong> extra dankzij {(acc.rendement * 100).toFixed(1)}% groei per jaar over {jarenTotStop} jaar.
-                        </div>
-                      </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 );
               })}
 
-              {/* Schulden */}
+              {/* Overige schulden — hypotheek staat al bij Levensstijl */}
               <div style={{ marginTop: 20, borderTop: `1px solid ${C.border}`, paddingTop: 18 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                   <div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>💳 Schulden</div>
-                    <div style={{ fontSize: 12, color: C.muted }}>Schulden worden van je vermogen afgetrokken</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>💳 Overige schulden</div>
+                    <div style={{ fontSize: 12, color: C.muted }}>Persoonlijke leningen, studieschuld, creditcard, etc. — <em>niet</em> je hypotheek, die staat al bij Levensstijl</div>
                   </div>
                   <button onClick={addSchuld} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 14px", fontSize: 13, color: C.muted }}>+ Schuld toevoegen</button>
                 </div>
                 {schulden.length === 0 && <div style={{ fontSize: 13, color: C.dim, fontStyle: "italic" }}>Geen schulden — goed bezig!</div>}
-                {schulden.map(s => (
-                  <div key={s.id} ref={el => accountRefs.current["schuld_" + s.id] = el} style={{ padding: "14px 16px", background: `${C.red}08`, borderRadius: 12, border: `1px solid ${C.red}30`, marginBottom: 8 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                      <input value={s.label} onChange={e => updSchuld(s.id, "label", e.target.value)} style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 14, fontWeight: 600, color: C.text, background: "transparent", border: "none", borderBottom: `1px dashed ${C.border}`, padding: "2px 4px", width: 160 }} />
-                      <button onClick={() => delSchuld(s.id)} style={{ background: "transparent", border: "none", color: C.dim, fontSize: 18 }}>×</button>
+                {schulden.map(s => {
+                  const heeftLooptijd = s.looptijdJaar > 0 && s.startjaar > 0;
+                  const eindjaar = heeftLooptijd ? s.startjaar + s.looptijdJaar : null;
+                  const isAfgelostOpStop = eindjaar && eindjaar <= stopJaar;
+                  return (
+                    <div key={s.id} ref={el => accountRefs.current["schuld_" + s.id] = el} style={{ padding: "14px 16px", background: `${C.red}08`, borderRadius: 12, border: `1px solid ${C.red}30`, marginBottom: 8 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <input value={s.label} onChange={e => updSchuld(s.id, "label", e.target.value)} style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 14, fontWeight: 600, color: C.text, background: "transparent", border: "none", borderBottom: `1px dashed ${C.border}`, padding: "2px 4px", width: 180 }} />
+                          {eindjaar && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 6, background: isAfgelostOpStop ? `${C.greenLight}20` : `${C.red}15`, color: isAfgelostOpStop ? C.greenLight : C.red, fontWeight: 600 }}>{isAfgelostOpStop ? `✓ Afgelost (${eindjaar})` : `Loopt t/m ${eindjaar}`}</span>}
+                        </div>
+                        <button onClick={() => delSchuld(s.id)} style={{ background: "transparent", border: "none", color: C.dim, fontSize: 18 }}>×</button>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+                        <div><Lbl>Schuldbedrag</Lbl><NumInp value={s.bedrag} onChange={v => updSchuld(s.id, "bedrag", v)} prefix="€" placeholder="0" /></div>
+                        <div><Lbl>Rente/jaar</Lbl><NumInp value={s.rente} onChange={v => updSchuld(s.id, "rente", v)} suffix="%" placeholder="0" /></div>
+                        <div><Lbl info="Looptijd in jaren, bijv. 5 jaar voor een persoonlijke lening.">Looptijd (jaar)</Lbl><NumInp value={s.looptijdJaar} onChange={v => updSchuld(s.id, "looptijdJaar", v)} suffix="jaar" placeholder="0" /></div>
+                        <div><Lbl info="Startjaar van de lening.">Startjaar</Lbl><NumInp value={s.startjaar} onChange={v => updSchuld(s.id, "startjaar", v)} placeholder="2020" /></div>
+                      </div>
+                      <div style={{ marginTop: 8 }}><Lbl>Maandlast</Lbl><NumInp value={s.maandlast} onChange={v => updSchuld(s.id, "maandlast", v)} prefix="€" suffix="/mnd" placeholder="0" /></div>
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                      <div><Lbl>Totale schuld</Lbl><NumInp value={s.bedrag} onChange={v => updSchuld(s.id, "bedrag", v)} prefix="€" placeholder="0" /></div>
-                      <div><Lbl>Rente/jaar</Lbl><NumInp value={s.rente} onChange={v => updSchuld(s.id, "rente", v)} suffix="%" placeholder="0" /></div>
-                      <div><Lbl>Maandlast</Lbl><NumInp value={s.maandlast} onChange={v => updSchuld(s.id, "maandlast", v)} prefix="€" suffix="/mnd" placeholder="0" /></div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {schulden.length > 0 && (
                   <div style={{ padding: "10px 14px", background: `${C.red}10`, borderRadius: 10, border: `1px solid ${C.red}30`, fontSize: 13, color: C.red, fontWeight: 600 }}>
                     Totale schulden: {eur(totaalSchulden)} · Maandlasten: {eur(maandlastSchulden)}/mnd
+                  </div>
+                )}
+              </div>
+
+              {/* Passief inkomen */}
+              <div style={{ marginTop: 20, borderTop: `1px solid ${C.border}`, paddingTop: 18 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 4 }}>🏦 Passief inkomen</div>
+                <p style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.6 }}>
+                  Inkomen dat je ontvangt zonder actief te werken. Denk aan huurinkomsten van vastgoed, dividend van aandelen, of rente-inkomsten. Dit telt mee in je vrijheidsplan.
+                </p>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                  {[
+                    { type: "huur", label: "🏠 Huurinkomsten", sub: "Extra woning, appartement" },
+                    { type: "dividend", label: "📈 Dividend", sub: "Aandelen, ETF's met uitkering" },
+                    { type: "rente", label: "💵 Rente-inkomsten", sub: "Obligaties, uitgeleend geld" },
+                    { type: "overig", label: "➕ Overig", sub: "Royalties, licenties, etc." },
+                  ].map(opt => (
+                    <button key={opt.type} onClick={() => addPasInkomen(opt.type)} style={{ padding: "8px 14px", borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface, color: C.muted, fontSize: 12, cursor: "pointer" }}>
+                      <div style={{ fontWeight: 600 }}>{opt.label}</div>
+                      <div style={{ fontSize: 10, color: C.dim }}>{opt.sub}</div>
+                    </button>
+                  ))}
+                </div>
+                {passiefInkomens.length === 0 && <div style={{ fontSize: 13, color: C.dim, fontStyle: "italic" }}>Nog geen passief inkomen toegevoegd.</div>}
+                {passiefInkomens.map(p => (
+                  <div key={p.id} ref={el => accountRefs.current["pas_" + p.id] = el} style={{ padding: "12px 14px", background: C.greenPale, borderRadius: 10, border: `1px solid ${C.greenLight}30`, marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                      <input value={p.label} onChange={e => updPasInkomen(p.id, "label", e.target.value)} style={{ fontFamily: "'Cormorant Garamond',serif", fontSize: 14, fontWeight: 600, color: C.text, background: "transparent", border: "none", borderBottom: `1px dashed ${C.border}`, padding: "2px 4px", width: 200 }} />
+                      <button onClick={() => delPasInkomen(p.id)} style={{ background: "transparent", border: "none", color: C.dim, fontSize: 18 }}>×</button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <div>
+                        <Lbl info="Hoeveel ontvang je hier nu per maand (of verwacht je te ontvangen)?">Maandelijks bedrag</Lbl>
+                        <NumInp value={p.maand} onChange={v => updPasInkomen(p.id, "maand", v)} prefix="€" suffix="/mnd" placeholder="0" />
+                      </div>
+                      <div>
+                        <Lbl info="Verwachte jaarlijkse groei van dit inkomen, bijv. huurstijging of dividendgroei.">Jaarlijkse groei</Lbl>
+                        <NumInp value={p.groeiPct} onChange={v => updPasInkomen(p.id, "groeiPct", v)} suffix="%" placeholder="2" />
+                      </div>
+                    </div>
+                    {p.maand > 0 && (
+                      <div style={{ marginTop: 8, fontSize: 12, color: C.greenLight }}>
+                        Op vrije leeftijd: ±{eur(Math.round(p.maand * Math.pow(1 + (p.groeiPct || 0) / 100, jarenTotStop)))}/mnd
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {passiefInkomens.length > 0 && (
+                  <div style={{ padding: "10px 14px", background: C.greenPale, borderRadius: 10, border: `1px solid ${C.greenLight}30`, fontSize: 13, color: C.greenLight, fontWeight: 600 }}>
+                    Totaal passief inkomen: {eur(totaalPasInkomen)}/mnd · Op vrije leeftijd: ±{eur(Math.round(passiefInkomens.reduce((s,p) => s + p.maand * Math.pow(1 + (p.groeiPct||0)/100, jarenTotStop), 0)))}/mnd
                   </div>
                 )}
               </div>
@@ -951,6 +1043,47 @@ export default function VrijheidsWizard() {
                 </div>
               )}
             </Card>
+
+            {/* Piechart vermogensverdeling */}
+            {accounts.length > 0 && totaalVerm > 0 && (() => {
+              const pieData = accounts
+                .filter(a => (a.waarde || 0) > 0)
+                .map(a => {
+                  const cat = ACCOUNT_CATS.find(c => c.id === a.catId);
+                  return { name: a.label, value: a.waarde, kleur: cat?.kleur || C.gold };
+                });
+              if (pieData.length < 2) return null;
+              return (
+                <Card>
+                  <Kop size={18} sub="Hoe is jouw vermogen verdeeld over verschillende typen?">Vermogensverdeling</Kop>
+                  <div style={{ display: "flex", gap: 20, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
+                    <div style={{ flex: "0 0 200px", height: 200 }}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie data={pieData} cx="50%" cy="50%" innerRadius={55} outerRadius={85} paddingAngle={3} dataKey="value">
+                            {pieData.map((entry, i) => (
+                              <Cell key={i} fill={entry.kleur} opacity={0.9} />
+                            ))}
+                          </Pie>
+                          <Tooltip formatter={(v) => [eur(v), ""]} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+                      {pieData.map((d, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <div style={{ width: 10, height: 10, borderRadius: "50%", background: d.kleur, flexShrink: 0 }} />
+                          <div style={{ flex: 1, fontSize: 13, color: C.text }}>{d.name}</div>
+                          <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 13, color: d.kleur, fontWeight: 600 }}>{eur(d.value)}</div>
+                          <div style={{ fontSize: 11, color: C.muted, width: 36, textAlign: "right" }}>{Math.round((d.value / totaalVerm) * 100)}%</div>
+                        </div>
+                      ))}
+                      {schulden.length > 0 && <div style={{ paddingTop: 8, borderTop: `1px solid ${C.border}`, fontSize: 12, color: C.red }}>Schulden: -{eur(totaalSchulden)} · Netto: {eur(totaalVerm)}</div>}
+                    </div>
+                  </div>
+                </Card>
+              );
+            })()}
 
             {/* Prognose grafiek */}
             {accounts.length > 0 && grafData.length > 0 && (
@@ -1060,7 +1193,26 @@ export default function VrijheidsWizard() {
                       <NumInp value={pens.werkgeverLeeftijd} onChange={v => setPn("werkgeverLeeftijd", v)} suffix="jaar" placeholder="68" />
                     </div>
                   </div>
-                  {pens.werkgeverLeeftijd > stopLft && <InfoBox type="let_op" style={{ marginTop: 10 }}>Dit pensioen komt pas op {pens.werkgeverLeeftijd} jaar. De {pens.werkgeverLeeftijd - stopLft} jaar daarvoor leef je alleen van je eigen vermogen.</InfoBox>}
+                  {pens.werkgeverLeeftijd > stopLft && (
+                    <div style={{ marginTop: 10, background: `${C.gold}10`, border: `1px solid ${C.gold}30`, borderRadius: 10, padding: "12px 14px" }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: C.gold }}>⚠️ Gat van {pens.werkgeverLeeftijd - stopLft} jaar zonder dit pensioen</div>
+                      <div style={{ display: "flex", gap: 4, marginTop: 8, height: 32, alignItems: "center" }}>
+                        <div style={{ flex: stopLft - leeftijd, background: C.gold, opacity: 0.3, borderRadius: "4px 0 0 4px", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <span style={{ fontSize: 10, color: C.text, fontWeight: 600 }}>Opbouw</span>
+                        </div>
+                        <div style={{ flex: pens.werkgeverLeeftijd - stopLft, background: C.red, opacity: 0.5, height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <span style={{ fontSize: 10, color: "#fff", fontWeight: 600 }}>Gat — geen pensioen</span>
+                        </div>
+                        <div style={{ flex: 10, background: C.greenLight, opacity: 0.4, borderRadius: "0 4px 4px 0", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <span style={{ fontSize: 10, color: C.text, fontWeight: 600 }}>Pensioen {pens.werkgever > 0 ? eur(pens.werkgever)+"/mnd" : ""}</span>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.muted, marginTop: 4 }}>
+                        <span>Vrij op {stopLft} jaar</span><span>Pensioen op {pens.werkgeverLeeftijd} jaar</span>
+                      </div>
+                      <div style={{ marginTop: 8, fontSize: 12, color: C.muted }}>Benodigd overbruggingsbedrag: <strong style={{ color: C.red }}>{eur(maandOpStop * 12 * (pens.werkgeverLeeftijd - stopLft))}</strong></div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1180,7 +1332,7 @@ export default function VrijheidsWizard() {
                 { icon: "💰", lbl: "Doel — wat je nodig hebt", val: eur(benodigdPot), sub: "Om voor altijd van te leven", clr: C.gold },
                 { icon: "📈", lbl: "Wat je opbouwt", val: eur(vermOpStopM), sub: "Meest waarschijnlijk scenario", clr: doelBereikt ? C.greenLight : C.red },
                 { icon: "📅", lbl: "Maandbudget", val: `${eur(maandOpStop)}/mnd`, sub: hypotheekVrij ? "Hypotheekvrij ✓" : `Incl. ${eur(hypoOpStop * partnerAandeel)}/mnd hypotheek`, clr: C.gold },
-                { icon: "🏛️", lbl: "Passief inkomen later", val: `${eur(totaalPassief)}/mnd`, sub: `AOW${pens.heeftWerkgever?" + pensioen":""}${pens.heeftEigen?" + eigen":""}`, clr: C.greenLight },
+                { icon: "🏛️", lbl: "Passief inkomen later", val: `${eur(totaalPassief)}/mnd`, sub: `AOW${pens.heeftWerkgever?" + pensioen":""}${pens.heeftEigen?" + eigen":""}${passiefInkomens.length > 0 ? " + huur/div." : ""}`, clr: C.greenLight },
               ].map((m, i) => (
                 <div key={i} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px" }}>
                   <div style={{ fontSize: 20, marginBottom: 8 }}>{m.icon}</div>
@@ -1200,6 +1352,14 @@ export default function VrijheidsWizard() {
                   { icon: "🏛️", lbl: `AOW${aowGat ? ` — pas vanaf ${aow.leeftijd} jaar` : ""}`, val: aowBij, sub: profiel.partner ? "Samenwonend tarief" : "Alleenstaand tarief", clr: C.gold, show: true },
                   { icon: "🏢", lbl: `Werkgeverspensioen${pens.werkgeverLeeftijd > stopLft ? ` — pas vanaf ${pens.werkgeverLeeftijd} jaar` : ""}`, val: pensBij, sub: "Via je werkgever", clr: "#7a5a8a", show: pens.heeftWerkgever },
                   { icon: "🔒", lbl: `Eigen pensioen${pens.eigenLeeftijd > stopLft ? ` — pas vanaf ${pens.eigenLeeftijd} jaar` : ""}`, val: eigenPensBij, sub: "Zelf opgebouwd", clr: "#4a90d9", show: pens.heeftEigen },
+                  ...passiefInkomens.filter(p => p.maand > 0).map(p => ({
+                    icon: p.type === "huur" ? "🏠" : p.type === "dividend" ? "📈" : p.type === "rente" ? "💵" : "➕",
+                    lbl: p.label,
+                    val: Math.round(p.maand * Math.pow(1 + (p.groeiPct||0)/100, jarenTotStop)),
+                    sub: `Passief inkomen — groeit ${p.groeiPct||0}%/jr`,
+                    clr: C.greenLight,
+                    show: true,
+                  })),
                 ].filter(r => r.show).map((r, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: `1px solid ${C.border}` }}>
                     <span style={{ fontSize: 20, flexShrink: 0 }}>{r.icon}</span>
@@ -1297,7 +1457,9 @@ export default function VrijheidsWizard() {
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
                       {[
                         { lbl: "Meer inleggen", val: `+${eur(Math.max(0, extraNodig))}/mnd`, sub: "extra inleg volstaat", icon: "💸" },
-                        { lbl: "Iets langer werken", val: `+${Math.ceil(Math.abs(verschil) / (jaarOpStop / 12))} jaar`, sub: "werkjaren extra nodig", icon: "📅" },
+                        langerWerkenHaalbaar
+                          ? { lbl: "Iets langer werken", val: extraWerkjaren > 0 ? `+${extraWerkjaren} jaar` : "Al maximaal", sub: maxExtraWerkjaren > 0 ? `Max. tot ${67} jaar (AOW-leeftijd)` : "Je zit al op of voorbij AOW-leeftijd", icon: "📅" }
+                          : { lbl: "Later stoppen", val: "Niet van toepassing", sub: "Je bent al op of voorbij AOW-leeftijd", icon: "📅" },
                         { lbl: "Minder uitgeven", val: `-${eur(Math.abs(verschil) * FIRE_PCT / 12)}/mnd`, sub: "minder nodig op vrije leeftijd", icon: "✂️" },
                       ].map((opt, i) => (
                         <div key={i} style={{ background: C.card, borderRadius: 10, padding: "12px 14px", border: `1px solid ${C.border}` }}>

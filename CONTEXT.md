@@ -96,6 +96,17 @@ Bij jouw geld ontbreekt dan schulden denk. Dit wordt van het vermogen nog afgeha
 Het verwacht pensioen bedrag komt dan toch voort uit de lijfrente spaarrekening als ze die hebben ingevuld bij de eerdere stap? Ze moeten de mogelijkheid hebben dit zelf nog aan te passen. Maar als ze lijfrente en pensioen rekeningen hebben toegevoegd ten behoeve van eigen pensioen dus kan dit vooraf worden ingevuld.
 Ik wil dat de output meer in een rapport wordt gemaakt met mooie visualisaties erbij die echte inzichten geven en aha momenten. Ik moet nu eerder gaan zoeken wat mis ik en hoe kan ik als ik een gat heb dit kan overbruggen.
 Opties op basis van de gegevens kunnen worden gegeven.
+- v0.6
+Bij schulden, moet het dan overige schulden ofzo worden want de gebruiker moet zich niet verwarren dat hij daar de hypotheek weer moet gaan invullen.
+Schulden kunnen soms ook worden afgelost dat ze een looptijd hebben.
+Sommige mensen hebben naast hun hoofdverblijf nog meerdere woningen. Deze vallen dan in de vastgoed categorie. Ze kunnen daarvoor wel huurinkomsten ontvangen. Dit levert dan passief inkomen op. We hebben dit nog nergens staan. 
+Evenals als je aandelen hebt kan je ook dividend inkomsten ontvangen dit behoort dan ook tot passief inkomen. Zijn er nog andere categorien wat ik niet heb opgenoemd maar waar wel rekening mee moet worden gehouden?
+Contant geld heeft geen rendement
+De weergave mag duidelijker. Nu loopt de tekst door de staven heen bij de uitleg van het effect rente op rente. De tekst moet boven de staafdiagram komen.
+Ik wil een piechart toevoegen hoe het vermogen is opgebouwd.
+De zelf invullen knop werkt niet bij mobiliteit er komt nergens in het scherm iets waar ik dan een bedrag kan invullen.
+Er staan geen bedragen berekend bij je eigen pensioen en aow. Misschien moet er duidelijker komen te staan op de gewenste financieel vrije leeftijd is daar nog geen uitkering en dan vanaf 68 of 67 de huidige aow leeftijd voor mensen met dat geboortejaar zou het inkomen vanuit pensioen en aow er met een x bedrag uitzien en dan missen ze nog een x bedrag. We moeten de gaten duidelijk en verhelderend kunnen aangeven of juist geen gaten als er voldoende is.
+Bij wat kan je doen om een gat te overbruggen staat er +50 jaar doorwerken. Dat kan natuurlijk niet. Want de aow en pensioen leeftijd is al 67 en je kan niet tot 90 jaar doorwerken. Dat is onrealistisch.
 ```
 
 ## Instructie voor Claude
