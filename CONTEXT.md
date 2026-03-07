@@ -59,7 +59,25 @@ Als je bij hypotheekdelen tot de conclusie komt dat de persoon hypotheek vrij is
 Als een lineair berekening te lastig wordt hoe kunnen we dit dan het beste oplossen?
 Wat is de logica hoelang je het dan wil volhouden? In de zin van je weet uiteindelijk welk inkomen je nodig hebt. Maar dan voor hoeveel jaar moeten we dan vooruit gaan rekenen. Zodat we een goede indicatie kunnen geven wat ze echt nodig hebben? Wat is hierin gangbaar?
 Het vrijheidsplan is goed om in verschillende scenario's uit te voeren, optimistisch pessimistisch, waarschijnlijk. 
-Per vermogens soort moet je rendement kunnen invullen. Zou ook mooi zijn als je gelijk ziet welke scenario's er zijn en wat het rendement is afhankelijk van de leeftijd. Dus je kijkt dan naar de huidige inleg en het te verwachten rendement. Je vraagt ook naar de verwachte inleg. En je maakt de prognose tot het jaar dat de gebruiker financieel vrij wil zijn. 
+Per vermogens soort moet je rendement kunnen invullen. Zou ook mooi zijn als je gelijk ziet welke scenario's er zijn en wat het rendement is afhankelijk van de leeftijd. Dus je kijkt dan naar de huidige inleg en het te verwachten rendement. Je vraagt ook naar de verwachte inleg. En je maakt de prognose tot het jaar dat de gebruiker financieel vrij wil zijn.
+- v0.4
+bij verzekeringen overige, zodat de gebruiker zelf iets kan invullen.
+En een omschrijving dat de voor ingevulde bedragen de gemiddelden zijn.
+Bij de uitleg over cashbuffer, liever het advies weglaten dat het actief belegd kan worden.
+Rendement moet je per categorie kunnen aangeven. 
+Rendement per portfolio item dan in een lijn grafiek aangeven waarbij in de grafiek pessimistisch optimistisch en waarschijnlijk scenario te zien zijn. Die dus door het systeem worden berekend op basis van vuistregels en standaarden.
+In het vermogensplan moet je toch ergens de aow uitkering erbij krijgen. 
+Ik denk ook dat we moeten laten zien hoeveel je dan per maand hebt en waar dat uit bestaat.
+Inleg moet per soort, dus inleg, beleggen, sparen, overig. Want elk soort heeft een ander rendement. Het moet heel simpel zichtbaar worden dat de verschillende rendementen bijdragen aan het vermogen.
+Bewoordingen zijn wat moeilijk. Ik wil dat het vermogensopbouw voor iedereen is. Dus ook als je niet weet wat kapitaal is. Dus dan ipv benodigd kapitaal kan je liever zeggen benodigd bedrag ofzo. Denk zelf hier ook over na wat simpele bewoording is die velen zullen begrijpen als je niet uit business komt of de financiele wereld.
+Moet er bij pensioengegevens niet iets komen over de leeftijd waarop het dan beschikbaar zou komen? Pensioenen is het lastigste stuk voor de meeste dit moet zo simpel en makkelijk mogelijk worden uitgelegd en de gebruiker moet op een gebruiksvriendelijke manier hierdoor worden heen begeleid.
+We moeten nadenken over hoe je dit dient in te vullen als alleenstaande en met partner. Als je namelijk je vaste lasten invult en je hebt een partner dan lijkt me dat de kosten worden verdeeld? Ik denk dat je dan moet kunnen kiezen middels percentages hoe die verdeling eruit ziet. Bijvoorbeeld 50-50 of 30-70. Sommige koppels verdelen de lasten adhv kostenposten. Dus bijvoorbeeld de hypotheek betaalt 1 persoon en de ander betaalt gas water en licht bijvoorbeeld. Hoe kan je dit op een simpele en gebruiksvriendelijke manier oplossen?
+Ook bij pensioen om het minder overweldigend te laten lijken. Eerst vragen of men over een pensioen beschikt en als het is aangevinkt pas de velden worden weergegeven.
+De bewoording liquide zegt de gemiddelde Nederlander ook niets.
+Bij huidig vermogen wil ik zelf rekeningen kunnen toevoegen. Label geven in welke categorie het valt en dan het gemiddeld rendement wat bij die categorie hoort al weergeven als ze het er niet mee eens zijn mogen ze dit wijzigen. Je ziet de wijzigingen dan direct in de grafiek eronder met op de x het aantal jaar en Y de waarde in geld. Ik wil het compounding effect laten zien. 
+Bij spaar of banktegoeden wil ik vooraf ingevuld de huidige marktrente. Kan je deze ergens ophalen? Ook uitleg erbij wat het rente percentage inhoud. Het doel van de verschillen tussen de verschillende type moet de gebruiker doen beseffen dat geld op verschillende manieren kan groeien. 
+De cashbusfer uitleggen waar we vanuit zijn gegaan. 
+
 ```
 
 ## Instructie voor Claude
